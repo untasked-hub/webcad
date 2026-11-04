@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebCAD — Browser 2D CAD</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230f1520'/><path d='M6 26 L6 8 L16 20 L26 8 L26 26' fill='none' stroke='%23ffb454' stroke-width='3' stroke-linejoin='round'/></svg>">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" class="logo"><rect width="32" height="32" rx="7" fill="#131a26"/><path d="M6 26 L6 8 L16 20 L26 8 L26 26" fill="none" stroke="#ffb454" stroke-width="3" stroke-linejoin="round"/></svg>
+      <div class="brand-text"><strong>WebCAD</strong><span>browser drafting</span></div>
+    </div>
+    <div class="menu">
+      <button class="mb" id="btnNew">New</button>
+      <button class="mb" id="btnOpen">Open</button>
+      <button id="btnImport" class="tb" title="Import a DXF file">Import DXF</button>
+      <input type="file" id="fileImport" accept=".dxf" style="display:none">
+      <button class="mb" id="btnSave">Save</button>
+      <span class="sep"></span>
+      <button class="mb" id="btnUndo" title="Undo (Ctrl+Z)">↶ Undo</button>
+      <button class="mb" id="btnRedo" title="Redo (Ctrl+Y)">↷ Redo</button>
+      <span class="sep"></span>
+      <button class="mb" id="btnZoomExt">Zoom Extents</button>
+      <button class="mb" id="btnFit" title="Fit selection or all content (F)">Fit</button>
+      <button class="mb" id="btnCommandGuide" aria-controls="commandGuide" aria-expanded="false" title="Open the drafting command guide (?)">Guide <kbd>?</kbd></button>
+      <button class="mb" id="btnGrid">Grid</button>
+      <span class="sep"></span>
+      <div class="dropdown">
+        <button class="mb" id="btnExport">Export ▾</button>
+        <div class="dd-menu" id="exportMenu">
+          <button data-exp="svg">SVG vector</button>
+          <button data-exp="dxf" title="ASCII R12: lines, polylines, rectangles, circles, arcs, and text; dimensions are omitted. Choose mm or inches at export.">DXF (ASCII · choose units)</button>
+          <button data-exp="png">PNG image</button>
+          <button data-exp="json">JSON drawing</button>
+          <button data-exp="print" title="Open a paper-sized print sheet and use the browser's print dialog (Save as PDF works too)">Print / PDF sheet…</button>
+        </div>
+      </div>
+      <button class="mb" id="btnShare">Share</button>
+    </div>
+    <div class="docinfo">
+      <input id="docName" class="docname" value="Untitled Drawing" spellcheck="false">
+      <span class="status-pill" id="savePill">saved</span>
+      <span class="sep"></span>
+      <div id="authBox" class="authbox"></div>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <aside class="toolbar" id="toolbar">
+      <button class="tool" data-tool="select" title="Select / move (V)"><svg viewBox="0 0 20 20"><path d="M4 2 L4 16 L7.5 12.5 L10 18 L12 17 L9.5 11.7 L14 11.5 Z"/></svg><span>Select</span></button>
+      <button class="tool" data-tool="line" title="Line (L)"><svg viewBox="0 0 20 20"><path d="M3 17 L17 3" stroke-width="2"/><circle cx="3" cy="17" r="1.7"/><circle cx="17" cy="3" r="1.7"/></svg><span>Line</span></button>
+      <button class="tool" data-tool="polyline" title="Polyline (P)"><svg viewBox="0 0 20 20"><path d="M2 16 L7 6 L12 12 L18 3" stroke-width="2"/></svg><span>Polyline</span></button>
+      <button class="tool" data-tool="vertex" title="Vertex edit (Q): reshape a polyline — drag squares to move, circles to insert, Del to delete"><svg viewBox="0 0 20 20"><path d="M2 16 L7 6 L12 12 L18 3" stroke-width="1.7"/><rect x="0.5" y="14.5" width="4" height="4"/><rect x="5.5" y="4.5" width="4" height="4"/><circle cx="12" cy="12" r="2.2"/><rect x="16" y="1" width="4" height="4"/></svg><span>Vertex</span></button>
+      <button class="tool" data-tool="rect" title="Rectangle (R)"><svg viewBox="0 0 20 20"><rect x="3" y="5" width="14" height="10" stroke-width="2"/></svg><span>Rect</span></button>
+      <button class="tool" data-tool="circle" title="Circle (C)"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" stroke-width="2"/></svg><span>Circle</span></button>
+      <button class="tool" data-tool="arc" title="Arc (A)"><svg viewBox="0 0 20 20"><path d="M2 15 A8 8 0 0 1 18 15" stroke-width="2"/></svg><span>Arc</span></button>
+      <button class="tool" data-tool="text" title="Text (T)"><svg viewBox="0 0 20 20"><path d="M3 5 H17 M10 5 V16" stroke-width="2"/></svg><span>Text</span></button>
+      <button class="tool" data-tool="dim" title="Linear dimension (D)"><svg viewBox="0 0 20 20"><path d="M3 6 V14 M17 6 V14 M3 10 H17" stroke-width="1.7"/><path d="M5 8 L3 10 L5 12 M15 8 L17 10 L15 12" stroke-width="1.4"/></svg><span>Dim</span></button>
+      <button class="tool" data-tool="offset" title="Offset: parallel copy (pick object, then pick side)"><svg viewBox="0 0 20 20"><path d="M3 14 H17 M3 6 H17" stroke-width="1.7"/><path d="M14 3.5 L17 6 L14 8.5" stroke-width="1.4" fill="none"/><path d="M6 11.5 L3 14 L6 16.5" stroke-width="1.4" fill="none"/></svg><span>Offset</span></button>
+      <button class="tool" data-tool="measure" title="Measure: click two points to read the distance (U)"><svg viewBox="0 0 20 20"><path d="M3 17 L17 3" stroke-width="1.7" stroke-dasharray="3 2"/><circle cx="3" cy="17" r="1.7"/><circle cx="17" cy="3" r="1.7"/></svg><span>Measure</span></button>
+      <div class="tool-sep"></div>
+      <button class="tool" data-tool="move" title="Move (M)"><svg viewBox="0 0 20 20"><path d="M10 2 V18 M2 10 H18 M10 2 L7 5 M10 2 L13 5 M10 18 L7 15 M10 18 L13 15 M2 10 L5 7 M2 10 L5 13 M18 10 L15 7 M18 10 L15 13" stroke-width="1.5"/></svg><span>Move</span></button>
+      <button class="tool" data-tool="copy" title="Copy (Ctrl+C then pick)"><svg viewBox="0 0 20 20"><rect x="3" y="3" width="9" height="9" stroke-width="1.7"/><rect x="8" y="8" width="9" height="9" stroke-width="1.7"/></svg><span>Copy</span></button>
+      <button class="tool" data-tool="rotate" title="Rotate"><svg viewBox="0 0 20 20"><path d="M16 10 A6 6 0 1 1 10 4" stroke-width="1.8"/><path d="M10 1 L10 7 L15 4" stroke-width="1.6"/></svg><span>Rotate</span></button>
+      <button class="tool" id="btnMirrorX" title="Mirror selection horizontally about its centre (Shift+X)"><svg viewBox="0 0 20 20"><path d="M10 2 V18" stroke-width="1.6" stroke-dasharray="3 2"/><path d="M7 6 L2 10 L7 14" stroke-width="1.7"/><path d="M13 6 L18 10 L13 14" stroke-width="1.7"/></svg><span>Mirror H</span></button>
+      <button class="tool" id="btnMirrorXCopy" title="Mirror-copy selection horizontally, keeping originals (Shift+X)"><svg viewBox="0 0 20 20"><path d="M10 2 V18" stroke-width="1.6" stroke-dasharray="3 2"/><path d="M7 6 L2 10 L7 14" stroke-width="1.7"/><path d="M13 6 L18 10 L13 14" stroke-width="1.7"/><circle cx="16" cy="16" r="2.4" stroke-width="1.4"/></svg><span>Mirror+Copy H</span></button>
+      <button class="tool" id="btnMirrorYCopy" title="Mirror-copy selection vertically, keeping originals (Shift+Y)"><svg viewBox="0 0 20 20"><path d="M2 10 H18" stroke-width="1.6" stroke-dasharray="3 2"/><path d="M6 7 L10 2 L14 7" stroke-width="1.7"/><path d="M6 13 L10 18 L14 13" stroke-width="1.7"/><circle cx="16" cy="16" r="2.4" stroke-width="1.4"/></svg><span>Mirror+Copy V</span></button>
+      <button class="tool" id="btnMirrorY" title="Mirror selection vertically about its centre (Shift+Y)"><svg viewBox="0 0 20 20"><path d="M2 10 H18" stroke-width="1.6" stroke-dasharray="3 2"/><path d="M6 7 L10 2 L14 7" stroke-width="1.7"/><path d="M6 13 L10 18 L14 13" stroke-width="1.7"/></svg><span>Mirror V</span></button>
+      <button class="tool" id="btnArray" title="Rectangular array of the selection (Shift+A)"><svg viewBox="0 0 20 20"><rect x="3" y="3" width="5" height="5" rx="1"/><rect x="12" y="3" width="5" height="5" rx="1"/><rect x="3" y="12" width="5" height="5" rx="1"/><rect x="12" y="12" width="5" height="5" rx="1"/></svg><span>Array</span></button>
+      <button class="tool" id="btnArrayPolar" title="Polar array of the selection (Shift+P)"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.4"/><circle cx="10" cy="3.5" r="1.6"/><circle cx="15.8" cy="6.8" r="1.6"/><circle cx="15.8" cy="13.2" r="1.6"/><circle cx="10" cy="16.5" r="1.6"/><circle cx="4.2" cy="13.2" r="1.6"/><circle cx="4.2" cy="6.8" r="1.6"/></svg><span>Polar</span></button>
+      <button class="tool" data-tool="fillet" title="Fillet / Shift = chamfer: pick two lines near a corner"><svg viewBox="0 0 20 20"><path d="M3 17 L3 7 Q3 3 7 3 L17 3" stroke-width="1.8" fill="none"/><path d="M3 17 L10 17 M17 3 L17 10" stroke-width="1.4" stroke-dasharray="2 2"/></svg><span>Fillet</span></button>
+      <button class="tool" data-tool="trim" title="Trim: first click = cutting edge, then click parts to cut (Alt = cut against all)"><svg viewBox="0 0 20 20"><path d="M3 3 L9 9" stroke-width="1.8"/><path d="M14 3 L3 14" stroke-width="1.8"/><path d="M13 11 L17 15 M17 11 L13 15" stroke-width="1.8"/></svg><span>Trim</span></button>
+      <button class="tool" data-tool="extend" title="Extend: click the end of a line to stretch it to the next boundary"><svg viewBox="0 0 20 20"><path d="M3 14 L11 6" stroke-width="1.8"/><path d="M11 10 L15 6 M11 6 L15 2" stroke-width="1.6"/><path d="M14 15 H18 M16 13 V17" stroke-width="1.6"/></svg><span>Extend</span></button>
+      <button class="tool" data-tool="break" title="Break (B): pick an object, then a point to split it into two objects"><svg viewBox="0 0 20 20"><path d="M2 10 H8" stroke-width="1.8"/><path d="M12 10 H18" stroke-width="1.8"/><path d="M9 6 L11 14 M10.5 4 L10.5 6" stroke-width="1.4"/></svg><span>Break</span></button>
+      <button class="tool" data-tool="erase" title="Erase selected (Del)"><svg viewBox="0 0 20 20"><path d="M4 16 L14 4 L18 8 L9 18 Z" stroke-width="1.7"/><path d="M2 18 H12" stroke-width="1.7"/></svg><span>Erase</span></button>
+    </aside>
+
+    <main class="canvas-wrap" id="canvasWrap">
+      <canvas id="cv"></canvas>
+      <div class="hud" id="hud">
+        <div class="hud-row"><span class="k">X</span><span id="hx">0.00</span><span class="k">Y</span><span id="hy">0.00</span></div>
+        <div class="hud-row"><span class="k">ZOOM</span><span id="hz">100%</span></div>
+        <div class="hud-row" id="hud-measure" style="display:none"><span class="k">L</span><span id="hl">—</span><span class="k">A</span><span id="ha">—</span><span class="k">Δ</span><span id="hd">—</span></div>
+        <div class="hud-row" id="hud-snap" style="display:none"><span class="k">SNAP</span><span id="hs">—</span></div>
+      </div>
+      <div class="prompt" id="prompt">
+        <span class="prompt-ico">›</span>
+        <span id="promptText">Ready</span>
+      </div>
+      <div class="tip" id="tip">Wheel = zoom · Middle/space-drag = pan · F8 ortho · F10 polar (45°) · F9 grid snap · F3 object snap</div>
+    </main>
+
+    <aside class="side">
+      <section class="panel">
+        <h3>Layers <button class="mini" id="btnAddLayer">+</button></h3>
+        <div class="layer-list" id="layerList"></div>
+      </section>
+      <section class="panel grow">
+        <h3>Properties</h3>
+        <div id="props" class="props"><div class="empty">Nothing selected</div></div>
+      </section>
+      <section class="panel">
+        <h3>Selection</h3>
+        <div id="selInfo" class="selinfo">0 objects</div>
+        <div class="btn-row">
+          <button class="mini wide" id="btnSelLayer">Move to layer…</button>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <footer class="statusbar">
+    <div class="st-left">
+      <input id="cmdInput" class="cmd-input" placeholder="Type x,y · @x,y · dist<angle, Enter to place" autocomplete="off" spellcheck="false">
+      <span id="cmdEcho">Command: —</span>
+    </div>
+    <div class="st-right">
+      <button class="toggle on" id="tgSnap" title="Object snap (F3)">OSNAP</button>
+      <button class="toggle" id="tgGridSnap" title="Grid snap (F9)">SNAP</button>
+      <button class="toggle" id="tgOrtho" title="Ortho (F8)">ORTHO</button>
+      <button class="toggle" id="tgPolar" title="Polar angle snap 45° (F10)">POLAR</button>
+      <button class="toggle on" id="tgGrid" title="Grid (F7)">GRID</button>
+      <span id="countInfo">0 entities</span>
+    </div>
+  </footer>
+</div>
+
+<div class="modal" id="openModal">
+  <div class="modal-box">
+    <div class="modal-head"><h2>Open drawing</h2><button class="mini" id="closeOpen">✕</button></div>
+    <div id="drawingList" class="drawing-list">Loading…</div>
+  </div>
+</div>
+
+<div class="modal" id="authModal">
+  <div class="modal-box small">
+    <div class="modal-head"><h2 id="authTitle">Sign in</h2><button class="mini" id="authClose">✕</button></div>
+    <input id="authUser" class="text-input" placeholder="Username" autocomplete="username" spellcheck="false">
+    <input id="authPass" class="text-input" type="password" placeholder="Password" autocomplete="current-password">
+    <div class="modal-foot">
+      <button class="mb" id="authSwitch">Need an account? Register</button>
+      <button class="mb accent" id="authGo">Sign in</button>
+    </div>
+    <div id="authErr" class="auth-err"></div>
+  </div>
+</div>
+
+<div class="modal" id="textModal">
+  <div class="modal-box small">
+    <div class="modal-head"><h2>Text</h2></div>
+    <input id="textInput" class="text-input" placeholder="Label text…" autocomplete="off">
+    <div class="modal-foot"><button class="mb" id="textCancel">Cancel</button><button class="mb accent" id="textOk">Place</button></div>
+  </div>
+</div>
+
+<div class="modal" id="arrayModal">
+  <div class="modal-box small">
+    <div class="modal-head"><h2>Rectangular array</h2></div>
+    <input id="arrRows" class="text-input" type="number" min="1" max="100" placeholder="Rows">
+    <input id="arrCols" class="text-input" type="number" min="1" max="100" placeholder="Columns">
+    <input id="arrDx" class="text-input" type="number" step="any" placeholder="X spacing">
+    <input id="arrDy" class="text-input" type="number" step="any" placeholder="Y spacing">
+    <div class="modal-foot"><button class="mb" id="arrCancel">Cancel</button><button class="mb accent" id="arrOk">Apply</button></div>
+  </div>
+</div>
+
+
+<div class="modal" id="printModal">
+  <div class="modal-box small">
+    <div class="modal-head"><h2>Print / PDF sheet</h2><button class="mini" id="printClose">✕</button></div>
+    <label class="print-row">Paper
+      <select id="printPaper" class="text-input">
+        <option value="a4">A4 (210 × 297 mm)</option>
+        <option value="letter">Letter (8.5 × 11 in)</option>
+        <option value="a3">A3 (297 × 420 mm)</option>
+      </select>
+    </label>
+    <label class="print-row">Orientation
+      <select id="printOrient" class="text-input">
+        <option value="portrait">Portrait</option>
+        <option value="landscape">Landscape</option>
+      </select>
+    </label>
+    <label class="print-row">Scale
+      <select id="printScaleMode" class="text-input">
+        <option value="fit">Fit to page</option>
+        <option value="custom">Custom %</option>
+      </select>
+    </label>
+    <input id="printScalePct" class="text-input" type="number" min="1" max="10000" value="100" placeholder="Scale %">
+    <label class="print-check"><input id="printTitle" type="checkbox" checked> Include title block (name, scale, date)</label>
+    <div class="modal-foot"><button class="mb" id="printCancel">Cancel</button><button class="mb accent" id="printGo">Open print view</button></div>
+    <p class="print-hint">Uses the browser print dialog — choose “Save as PDF” there to export a PDF.</p>
+  </div>
+</div>
+
+<div class="modal" id="polarModal">
+  <div class="modal-box small">
+    <div class="modal-head"><h2>Polar array</h2></div>
+    <input id="polCount" class="text-input" type="number" min="2" max="500" placeholder="Number of items (total)">
+    <input id="polAngle" class="text-input" type="number" step="any" placeholder="Angle step in degrees (blank = full circle)">
+    <div class="modal-foot"><button class="mb" id="polCancel">Cancel</button><button class="mb accent" id="polOk">Apply</button></div>
+  </div>
+</div>
+
+<aside class="command-guide" id="commandGuide" role="region" aria-labelledby="commandGuideTitle" aria-hidden="true">
+  <div class="guide-head">
+    <div><p class="eyebrow">QUICK REFERENCE</p><h2 id="commandGuideTitle">Drafting guide</h2></div>
+    <button class="mini guide-close" id="closeCommandGuide" aria-label="Close drafting guide">✕</button>
+  </div>
+  <label class="guide-search-label" for="guideSearch">Find a tool or shortcut</label>
+  <input id="guideSearch" class="guide-search" type="search" placeholder="Try “circle”, “undo”, or “snap”" autocomplete="off">
+  <div class="guide-content" id="guideContent">
+    <section class="guide-group" data-guide-group>
+      <h3>Start a drawing</h3>
+      <div class="guide-row" data-guide-item data-search="select move v selection"><span><b>Select</b><small>Choose or move objects</small></span><kbd>V</kbd></div>
+      <div class="guide-row" data-guide-item data-search="line l"><span><b>Line</b><small>Pick start, then end</small></span><kbd>L</kbd></div>
+      <div class="guide-row" data-guide-item data-search="polyline p enter finish"><span><b>Polyline</b><small>Pick vertices; Enter finishes</small></span><kbd>P</kbd></div>
+      <div class="guide-row" data-guide-item data-search="rectangle rect r"><span><b>Rectangle</b><small>Pick opposite corners</small></span><kbd>R</kbd></div>
+      <div class="guide-row" data-guide-item data-search="circle c"><span><b>Circle</b><small>Pick centre, then radius</small></span><kbd>C</kbd></div>
+      <div class="guide-row" data-guide-item data-search="arc a"><span><b>Arc</b><small>Follow the on-canvas prompts</small></span><kbd>A</kbd></div>
+      <div class="guide-row" data-guide-item data-search="text t"><span><b>Text</b><small>Choose Text, enter label, place it</small></span><kbd>T</kbd></div>
+      <div class="guide-row" data-guide-item data-search="dimension dim d"><span><b>Dimension</b><small>Pick endpoints, then offset</small></span><kbd>D</kbd></div>
+      <div class="guide-row" data-guide-item data-search="measure distance u"><span><b>Measure</b><small>Pick two points to read distance</small></span><kbd>U</kbd></div>
+      <div class="guide-row" data-guide-item data-search="move m"><span><b>Move</b><small>Select objects, then pick base and destination</small></span><kbd>M</kbd></div>
+      <div class="guide-row" data-guide-item data-search="erase delete e"><span><b>Erase</b><small>Select objects and press Delete</small></span><kbd>E</kbd></div>
+      <div class="guide-row" data-guide-item data-search="rotate o"><span><b>Rotate</b><small>Select objects, then follow prompts</small></span><kbd>O</kbd></div>
+      <div class="guide-row" data-guide-item data-search="vertex edit polyline q"><span><b>Vertex edit</b><small>Choose a polyline to reshape</small></span><kbd>Q</kbd></div>
+    </section>
+    <section class="guide-group" data-guide-group>
+      <h3>Modify &amp; undo</h3>
+      <div class="guide-row" data-guide-item data-search="copy ctrl c"><span><b>Copy selection</b><small>Copy, then pick placement</small></span><kbd>Ctrl C</kbd></div>
+      <div class="guide-row" data-guide-item data-search="paste ctrl v"><span><b>Paste selection</b><small>Place a copied selection</small></span><kbd>Ctrl V</kbd></div>
+      <div class="guide-row" data-guide-item data-search="undo redo ctrl z y"><span><b>Undo / redo</b><small>Undo; redo with Ctrl+Y or Ctrl+Shift+Z</small></span><kbd>Ctrl Z</kbd></div>
+      <div class="guide-row" data-guide-item data-search="select all ctrl a"><span><b>Select all</b><small>Select every object</small></span><kbd>Ctrl A</kbd></div>
+      <div class="guide-row" data-guide-item data-search="mirror horizontal vertical shift x y"><span><b>Mirror</b><small>Flip selection about its centre</small></span><kbd>Shift X/Y</kbd></div>
+      <div class="guide-row" data-guide-item data-search="array rectangular shift a"><span><b>Rectangular array</b><small>Repeat selected objects in rows/columns</small></span><kbd>Shift A</kbd></div>
+      <div class="guide-row" data-guide-item data-search="polar array shift p"><span><b>Polar array</b><small>Repeat selected objects around a centre</small></span><kbd>Shift P</kbd></div>
+      <div class="guide-row" data-guide-item data-search="offset parallel copy toolbar"><span><b>Offset</b><small>Pick an object, then pick the side to copy toward</small></span><kbd>Toolbar</kbd></div>
+      <div class="guide-row" data-guide-item data-search="fillet chamfer corner toolbar"><span><b>Fillet</b><small>Pick two lines near a corner; hold Shift for a chamfer</small></span><kbd>Toolbar</kbd></div>
+      <div class="guide-row" data-guide-item data-search="trim cut edge toolbar"><span><b>Trim</b><small>Click a cutting edge, then click parts to cut (Alt = all edges)</small></span><kbd>Toolbar</kbd></div>
+      <div class="guide-row" data-guide-item data-search="extend stretch boundary toolbar"><span><b>Extend</b><small>Click a line end to stretch it to the next boundary</small></span><kbd>Toolbar</kbd></div>
+      <div class="guide-row" data-guide-item data-search="break split divide toolbar"><span><b>Break</b><small>Pick an object, then pick the split point — the entity is cut in two (lines, arcs, circles, polylines)</small></span><kbd>Toolbar</kbd></div>
+      <div class="guide-row" data-guide-item data-search="mirror copy keep originals toolbar"><span><b>Mirror copy</b><small>Mirror-Copy H / V buttons keep the originals and add mirrored duplicates (Shift+X / Shift+Y)</small></span><kbd>Toolbar</kbd></div>
+    </section>
+    <section class="guide-group" data-guide-group>
+      <h3>Precision &amp; navigation</h3>
+      <div class="guide-row" data-guide-item data-search="object snap osnap f3"><span><b>Object snap</b><small>Toggle snap to geometry</small></span><kbd>F3</kbd></div>
+      <div class="guide-row" data-guide-item data-search="grid f7"><span><b>Grid</b><small>Show or hide the grid</small></span><kbd>F7</kbd></div>
+      <div class="guide-row" data-guide-item data-search="ortho f8"><span><b>Ortho</b><small>Constrain horizontal / vertical</small></span><kbd>F8</kbd></div>
+      <div class="guide-row" data-guide-item data-search="grid snap f9"><span><b>Grid snap</b><small>Toggle snapping to grid points</small></span><kbd>F9</kbd></div>
+      <div class="guide-row" data-guide-item data-search="polar snap f10"><span><b>Polar snap</b><small>Toggle 45° angle increments</small></span><kbd>F10</kbd></div>
+      <div class="guide-row" data-guide-item data-search="fit view zoom extents f"><span><b>Fit view</b><small>Fit selection, or all content</small></span><kbd>F</kbd></div>
+      <div class="guide-row" data-guide-item data-search="pan space middle mouse drag"><span><b>Pan</b><small>Middle-drag or hold Space and drag</small></span><kbd>Space</kbd></div>
+      <div class="guide-row" data-guide-item data-search="zoom wheel mouse"><span><b>Zoom</b><small>Scroll the mouse wheel</small></span><kbd>Wheel</kbd></div>
+    </section>
+    <section class="guide-group" data-guide-group>
+      <h3>Point entry &amp; control</h3>
+      <div class="guide-note" data-guide-item data-search="coordinate entry x y relative distance angle command point numeric">
+        In point-based tools, type a coordinate and press Enter: <code>x,y</code> (absolute), <code>@x,y</code> (relative to the last point), or <code>distance&lt;angle</code>. Start with a tool, then pick points in the order shown by the prompt.
+      </div>
+      <div class="guide-row" data-guide-item data-search="escape cancel finish command"><span><b>Cancel / finish</b><small>Escape cancels; Enter finishes a polyline or current step</small></span><kbd>Esc · ↵</kbd></div>
+      <div class="guide-row" data-guide-item data-search="delete backspace erase vertex"><span><b>Delete</b><small>Delete selection, or active vertex in Vertex mode</small></span><kbd>Del</kbd></div>
+    </section>
+    <p class="guide-empty" id="guideEmpty" hidden>No matches. Try a tool name or key.</p>
+  </div>
+  <p class="guide-foot">Shortcuts are available while the drawing canvas is active. Escape closes this guide.</p>
+</aside>
+<div class="toast" id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

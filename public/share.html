@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebCAD — shared drawing</title>
+<meta name="robots" content="noindex">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: #0b1017; color: #d9dee7;
+    font: 14px/1.45 Inter, system-ui, -apple-system, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px; background: #0f1620;
+    border-bottom: 1px solid #1c2735; flex: none;
+  }
+  header .logo { font-weight: 700; letter-spacing: .4px; color: #7fd1ff; text-decoration: none; }
+  header .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .badge {
+    flex: none; font-size: 11px; font-weight: 700; letter-spacing: .6px;
+    color: #ffb454; border: 1px solid #ffb454; border-radius: 4px;
+    padding: 2px 8px; text-transform: uppercase;
+  }
+  header .when { margin-left: auto; color: #77869b; font-size: 12px; white-space: nowrap; }
+  main { flex: 1; position: relative; min-height: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .msg {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px; text-align: center;
+    color: #77869b; padding: 24px;
+  }
+  .msg .big { font-size: 40px; }
+  .msg h1 { font-size: 17px; color: #d9dee7; font-weight: 600; }
+  .msg a { color: #7fd1ff; }
+  footer {
+    flex: none; padding: 7px 16px; border-top: 1px solid #1c2735;
+    color: #77869b; font-size: 12px; display: flex; gap: 8px; align-items: center;
+  }
+  footer a { color: #7fd1ff; text-decoration: none; font-weight: 600; }
+  .count { margin-left: auto; font-family: "JetBrains Mono", ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<header>
+  <a class="logo" href="/">WebCAD</a>
+  <span class="badge">Read-only</span>
+  <span class="name" id="name">Loading…</span>
+  <span class="when" id="when"></span>
+</header>
+<main id="stage">
+  <canvas id="cv"></canvas>
+  <div class="msg" id="msg"><div class="big">⌛</div><h1>Loading shared drawing…</h1></div>
+</main>
+<footer>
+  <span>This is a read-only view. Open <a href="/">WebCAD</a> to draw your own.</span>
+  <span class="count" id="count"></span>
+</footer>
+<script>
+(() => {
+'use strict';
+const TAU = Math.PI * 2;
+const rad = (d) => d * Math.PI / 180;
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+const add = (a, b) => [a[0] + b[0], a[1] + b[1]];
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1]];
+const mul = (a, k) => [a[0] * k, a[1] * k];
+const len = (a) => Math.hypot(a[0], a[1]);
+const norm = (a) => { const l = len(a) || 1; return [a[0] / l, a[1] / l]; };
+const fmt = (v) => (Math.round(v * 100) / 100).toFixed(2).replace(/\.?0+$/, '');
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const stage = document.getElementById('stage');
+
+let view = { x: 0, y: 0, zoom: 1 };
+let doc = null;
+
+function cvW() { return stage.clientWidth; }
+function cvH() { return stage.clientHeight; }
+function w2s(p) {
+  return [(p[0] - view.x) * view.zoom + cvW() / 2,
+          cvH() / 2 - (p[1] - view.y) * view.zoom];
+}
+
+function arcPts(e, n) {
+  let sweep = e.a1 - e.a0;
+  while (sweep <= 0) sweep += 360;
+  const out = [];
+  for (let i = 0; i <= n; i++) {
+    const a = rad(e.a0 + sweep * i / n);
+    out.push([e.c[0] + Math.cos(a) * e.r, e.c[1] + Math.sin(a) * e.r]);
+  }
+  return out;
+}
+
+function dimGeom(e) {
+  const d = sub(e.p2, e.p1);
+  const L = len(d) || 1;
+  const n = [-d[1] / L, d[0] / L];
+  const o = e.offset || 0;
+  const a = add(e.p1, mul(n, o));
+  const b = add(e.p2, mul(n, o));
+  return { a, b, n, txt: e.text || fmt(L),
+           lines: [[e.p1, add(e.p1, mul(n, o * 1.14))],
+                   [e.p2, add(e.p2, mul(n, o * 1.14))], [a, b]] };
+}
+
+function entityPoints(e) {
+  switch (e.type) {
+    case 'line': return [e.p1, e.p2];
+    case 'polyline': return e.pts || [];
+    case 'rect': return [[e.p1[0], e.p1[1]], [e.p2[0], e.p1[1]], e.p2, [e.p1[0], e.p2[1]]];
+    case 'circle': {
+      const out = [];
+      for (let i = 0; i < 48; i++) {
+        const a = TAU * i / 48;
+        out.push([e.c[0] + Math.cos(a) * e.r, e.c[1] + Math.sin(a) * e.r]);
+      }
+      return out;
+    }
+    case 'arc': return arcPts(e, 36);
+    case 'text': {
+      const h = e.size, w = String(e.text || '').length * h * 0.62;
+      return [e.p, [e.p[0] + w, e.p[1]], [e.p[0] + w, e.p[1] + h], [e.p[0], e.p[1] + h]];
+    }
+    case 'dim': return dimGeom(e).lines.reduce((a, s) => a.concat(s), []);
+    default: return [];
+  }
+}
+
+function extentsOf(ents) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const e of ents) for (const p of entityPoints(e)) {
+    if (p[0] < x0) x0 = p[0];
+    if (p[0] > x1) x1 = p[0];
+    if (p[1] < y0) y0 = p[1];
+    if (p[1] > y1) y1 = p[1];
+  }
+  if (!isFinite(x0)) return null;
+  return { x0, y0, x1, y1 };
+}
+
+function layerOf(name) {
+  return doc.layers.find(l => l.name === name) || doc.layers[0];
+}
+
+function pathFor(e) {
+  ctx.beginPath();
+  switch (e.type) {
+    case 'line': {
+      const a = w2s(e.p1), b = w2s(e.p2);
+      ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]);
+      break;
+    }
+    case 'polyline': {
+      const a = w2s(e.pts[0]);
+      ctx.moveTo(a[0], a[1]);
+      for (let i = 1; i < e.pts.length; i++) { const b = w2s(e.pts[i]); ctx.lineTo(b[0], b[1]); }
+      break;
+    }
+    case 'rect': {
+      const a = w2s(e.p1), b = w2s(e.p2);
+      ctx.rect(Math.min(a[0], b[0]), Math.min(a[1], b[1]),
+               Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
+      break;
+    }
+    case 'circle': {
+      const c = w2s(e.c);
+      ctx.arc(c[0], c[1], Math.max(0.4, e.r * view.zoom), 0, TAU);
+      break;
+    }
+    case 'arc': {
+      const c = w2s(e.c);
+      let sweep = e.a1 - e.a0;
+      while (sweep <= 0) sweep += 360;
+      if (sweep > 360) sweep = 360;
+      ctx.arc(c[0], c[1], Math.max(0.4, e.r * view.zoom), -rad(e.a0), -rad(e.a0 + sweep), true);
+      break;
+    }
+    default: break;
+  }
+}
+
+function drawEntity(e) {
+  const L = layerOf(e.layer);
+  if (!L || !L.visible) return;
+  const col = L.color || '#d9dee7';
+  ctx.save();
+  ctx.lineWidth = Math.max(0.9, (L.lineweight || 1) * 1.1);
+  ctx.strokeStyle = col;
+  ctx.fillStyle = col;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  if (e.type === 'text') {
+    const s = w2s(e.p);
+    const size = Math.max(6, e.size * view.zoom);
+    ctx.font = '600 ' + size + 'px Inter, system-ui, sans-serif';
+    ctx.fillText(e.text, s[0], s[1] + size * 0.16);
+  } else if (e.type === 'dim') {
+    const g = dimGeom(e);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const [a, b] of g.lines) {
+      const pa = w2s(a), pb = w2s(b);
+      ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]);
+    }
+    ctx.stroke();
+    const d = norm(sub(g.b, g.a));
+    const ah = 7;
+    for (const [pt, dir] of [[g.a, d], [g.b, mul(d, -1)]]) {
+      const s = w2s(pt);
+      const nx = -dir[1], ny = dir[0];
+      ctx.beginPath();
+      ctx.moveTo(s[0], s[1]);
+      ctx.lineTo(s[0] + dir[0] * ah + nx * ah * 0.36, s[1] - dir[1] * ah + ny * ah * 0.36);
+      ctx.lineTo(s[0] + dir[0] * ah - nx * ah * 0.36, s[1] - dir[1] * ah - ny * ah * 0.36);
+      ctx.closePath(); ctx.fill();
+    }
+    const pa = w2s(g.a), pb = w2s(g.b);
+    const c = [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2];
+    const fs = 11;
+    ctx.font = '600 ' + fs + 'px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(g.txt).width;
+    ctx.fillStyle = '#0b1017';
+    ctx.fillRect(c[0] - tw / 2 - 3, c[1] - fs / 2 - 2, tw + 6, fs + 4);
+    ctx.fillStyle = col;
+    ctx.fillText(g.txt, c[0], c[1]);
+  } else {
+    pathFor(e);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.max(1, Math.round(cvW() * dpr));
+  cv.height = Math.max(1, Math.round(cvH() * dpr));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+
+function fitView() {
+  const ext = extentsOf(doc.entities);
+  if (!ext) { view = { x: 0, y: 0, zoom: 1 }; return; }
+  const w = ext.x1 - ext.x0, h = ext.y1 - ext.y0;
+  const pad = 0.08;
+  const z = Math.min(cvW() / (w * (1 + 2 * pad) || 1),
+                     cvH() / (h * (1 + 2 * pad) || 1));
+  view.zoom = Math.max(0.01, Math.min(80, z));
+  view.x = (ext.x0 + ext.x1) / 2;
+  view.y = (ext.y0 + ext.y1) / 2;
+}
+
+function draw() {
+  ctx.clearRect(0, 0, cvW(), cvH());
+  ctx.fillStyle = '#0b1017';
+  ctx.fillRect(0, 0, cvW(), cvH());
+  if (!doc) return;
+  for (const e of doc.entities) drawEntity(e);
+}
+
+function showError(icon, title, extra) {
+  document.getElementById('name').textContent = 'Unavailable';
+  const msg = document.getElementById('msg');
+  msg.innerHTML = '<div class="big">' + icon + '</div><h1>' + title + '</h1>' +
+    (extra ? '<p>' + extra + ' <a href="/">Open WebCAD</a></p>' : '');
+  msg.style.display = 'flex';
+}
+
+// token comes from /s/<token>; tolerate a trailing slash
+const m = location.pathname.match(/^\/s\/([a-f0-9]{16,64})\/?$/);
+if (!m) {
+  showError('❓', 'This link does not point to a shared drawing', 'Check the link you were given.');
+} else {
+  fetch('/api/share/' + m[1])
+    .then(async (res) => {
+      if (res.status === 404) {
+        showError('🔗', 'This share link is no longer valid',
+                  'It may have been revoked by the owner.');
+        return;
+      }
+      if (!res.ok) {
+        showError('⚠️', 'Could not load this drawing (HTTP ' + res.status + ')',
+                  'Try again later.');
+        return;
+      }
+      const json = await res.json();
+      const d = json.drawing;
+      if (!d || !d.data || !Array.isArray(d.data.entities)) {
+        showError('⚠️', 'This drawing has no renderable content', '');
+        return;
+      }
+      doc = d.data;
+      document.getElementById('name').textContent = d.name || 'Untitled';
+      document.getElementById('when').textContent =
+        d.updated_at ? 'updated ' + new Date(d.updated_at).toLocaleString() : '';
+      document.getElementById('count').textContent = doc.entities.length + ' entities';
+      document.getElementById('msg').style.display = 'none';
+      resize();
+      fitView();
+      draw();
+      window.addEventListener('resize', () => { resize(); });
+    })
+    .catch(() => showError('⚠️', 'Network error while loading the drawing', ''));
+}
+window.addEventListener('resize', resize);
+})();
+</script>
+</body>
+</html>

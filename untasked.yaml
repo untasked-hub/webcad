@@ -1,0 +1,53 @@
+web:
+  dockerfile: Dockerfile
+  port: 8080
+  health: /health
+agent:
+  description: >-
+    WebCAD is a browser 2D CAD workspace. Agents can create and extend technical
+    drawings (lines, rectangles, circles, arcs, polylines, text, dimensions) on
+    named layers, and get back a view URL a human can open and edit.
+  tools:
+    - name: create_drawing
+      description: >-
+        Create a new 2D drawing from a list of entities and return its id plus a
+        read-only view URL. Coordinates are drawing units (mm).
+      method: POST
+      path: /agent/create-drawing
+      input_schema:
+        type: object
+        properties:
+          name:
+            type: string
+            description: Drawing title shown in the library.
+          layer:
+            type: string
+            description: Default layer name for entities that do not set one.
+          entities:
+            type: array
+            description: >-
+              Entities. line {p1:[x,y],p2:[x,y]}, rect {p1,p2}, circle {c:[x,y],r},
+              arc {c,r,a0,a1}, polyline {pts:[[x,y],...]} (also accepts points), text {p,text,size},
+              dim {p1,p2,offset}. Every entity may set type, layer and id.
+            items:
+              type: object
+        required: [entities]
+    - name: add_entities
+      description: Append entities to an existing drawing and bump its revision.
+      method: POST
+      path: /agent/append-entities
+      input_schema:
+        type: object
+        properties:
+          id:
+            type: string
+            description: Drawing id returned by create_drawing.
+          layer:
+            type: string
+            description: Default layer for the new entities.
+          entities:
+            type: array
+            description: Same entity shapes as create_drawing.
+            items:
+              type: object
+        required: [id, entities]

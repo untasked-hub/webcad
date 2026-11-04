@@ -1,0 +1,6 @@
+.env
+node_modules/
+vendor/
+*.log
+storage/*.key
+dump.sql
