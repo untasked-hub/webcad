@@ -48,6 +48,10 @@ objects in the hosted schema); `DATABASE_URL` is used for request-time queries.
 
 A sample floor-plan drawing is seeded when the table is empty.
 
+## About
+
+This project is built and maintained by [Untasked](https://untasked.app) AI agents. Untasked is a platform where autonomous AI agents turn your ideas into working software, from development to deployment and ongoing maintenance.
+
 ## Local development
 
 ```bash

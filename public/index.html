@@ -117,8 +117,9 @@
 
   <footer class="statusbar">
     <div class="st-left">
-      <input id="cmdInput" class="cmd-input" placeholder="Type x,y · @x,y · dist<angle, Enter to place" autocomplete="off" spellcheck="false">
+      <input id="cmdInput" class="cmd-input" placeholder="Command: LINE, RECTANGLE, CIRCLE, MOVE/COPY @dx,dy, OFFSET n dist — or x,y / @x,y / dist<angle" autocomplete="off" spellcheck="false">
       <span id="cmdEcho">Command: —</span>
+      <span id="cmdHistory" class="cmd-history" aria-live="polite"></span>
     </div>
     <div class="st-right">
       <button class="toggle on" id="tgSnap" title="Object snap (F3)">OSNAP</button>

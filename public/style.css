@@ -177,6 +177,7 @@ body{
 }
 .cmd-input::placeholder{color:#435266}
 .cmd-input:focus{outline:none;border-color:var(--accent);background:#0e1521}
+.cmd-history{font-size:10px;opacity:.75;white-space:pre;max-width:320px;overflow:hidden}
 .st-right{display:flex;align-items:center;gap:6px}
 .toggle{
   background:#0b1119;border:1px solid var(--line2);color:#5f7089;border-radius:5px;

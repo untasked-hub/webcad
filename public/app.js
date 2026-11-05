@@ -1780,6 +1780,180 @@ function pickPoint(p) {
 const cmdInput = document.getElementById('cmdInput');
 const PT_TOOLS = ['line', 'polyline', 'rect', 'circle', 'arc', 'dim', 'text'];
 
+/* ---------- command bar dispatcher (v1: LINE, RECTANGLE, CIRCLE, MOVE, COPY, OFFSET) ---------- */
+const CMD_NAMES = {
+  line: 'LINE', l: 'LINE',
+  circle: 'CIRCLE', c: 'CIRCLE',
+  rect: 'RECTANGLE', rectangle: 'RECTANGLE', r: 'RECTANGLE',
+  move: 'MOVE',
+  copy: 'COPY',
+  offset: 'OFFSET',
+};
+let cmdLogLines = [];
+function cmdLog(msg) {
+  cmdLogLines.push(msg);
+  if (cmdLogLines.length > 8) cmdLogLines = cmdLogLines.slice(-8);
+  const el = document.getElementById('cmdHistory');
+  if (el) el.textContent = cmdLogLines.join('\n');
+}
+function parsePointTokens(tokens) {
+  const pts = [];
+  let ref = state.lastPt || [0, 0];
+  for (const tk of tokens) {
+    const p = parseCoordEntry(tk, ref);
+    if (!p) return null;
+    pts.push(p);
+    ref = p;
+  }
+  return pts;
+}
+function entBBoxCenter(e) {
+  let xs = [], ys = [];
+  if (e.p1 && e.p2) { xs = [e.p1[0], e.p2[0]]; ys = [e.p1[1], e.p2[1]]; }
+  else if (e.p) { xs = [e.p[0]]; ys = [e.p[1]]; }
+  else if (e.c) { xs = [e.c[0]]; ys = [e.c[1]]; }
+  else if (e.pts) { xs = e.pts.map(q => q[0]); ys = e.pts.map(q => q[1]); }
+  if (!xs.length) return null;
+  return [xs.reduce((a, b) => a + b, 0) / xs.length, ys.reduce((a, b) => a + b, 0) / ys.length];
+}
+function nearestOnEnt(e, q) {
+  // nearest point on the entity to q, plus the unit direction from that point to q
+  if (e.type === 'circle' || e.type === 'arc') {
+    const dx = q[0] - e.c[0], dy = q[1] - e.c[1];
+    const n = Math.hypot(dx, dy) || 1;
+    const d = Math.hypot(dx, dy) - e.r;
+    return { pt: [e.c[0] + dx / n * e.r, e.c[1] + dy / n * e.r], dir: [dx / n, dy / n], d };
+  }
+  let best = null, bd = Infinity;
+  const segs = e.type === 'polyline' ? e.pts.length - 1
+             : e.type === 'rect' ? 4
+             : (e.p1 && e.p2) ? 1 : 0;
+  for (let i = 0; i < segs; i++) {
+    const a = e.type === 'polyline' ? e.pts[i]
+            : e.type === 'rect' ? [[e.p1[0], e.p1[1]], [e.p2[0], e.p1[1]], [e.p2[0], e.p2[1]], [e.p1[0], e.p2[1]]][i]
+            : e.p1;
+    const b = e.type === 'polyline' ? e.pts[i + 1]
+            : e.type === 'rect' ? [[e.p1[0], e.p1[1]], [e.p2[0], e.p1[1]], [e.p2[0], e.p2[1]], [e.p1[0], e.p2[1]]][(i + 1) % 4]
+            : e.p2;
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const len2 = dx * dx + dy * dy;
+    let t = len2 ? ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const px = a[0] + t * dx, py = a[1] + t * dy;
+    const d = Math.hypot(q[0] - px, q[1] - py);
+    if (d < bd) { bd = d; best = [px, py, a, b]; }
+  }
+  if (!best) return null;
+  const dx = q[0] - best[0], dy = q[1] - best[1];
+  const n = Math.hypot(dx, dy) || 1;
+  return { pt: [best[0], best[1]], dir: [dx / n, dy / n], d: bd };
+}
+
+function execCommand(raw) {
+  const s = (raw || '').trim();
+  if (!s) return false;
+  const tokens = s.split(/\s+/);
+  const head = tokens[0].toLowerCase();
+  const name = CMD_NAMES[head];
+  if (!name) return false; // not a command: caller falls back to coordinate entry
+  cmdLog(name);
+  const rest = tokens.slice(1);
+  if (name === 'LINE' || name === 'RECTANGLE' || name === 'CIRCLE') {
+    const tool = name === 'LINE' ? 'line' : name === 'RECTANGLE' ? 'rect' : 'circle';
+    setTool(tool);
+    if (!rest.length) { setPrompt(name + ': pick the ' + (name === 'CIRCLE' ? 'centre' : 'start') + ' point, or type x,y / @x,y / dist<angle'); return true; }
+    // CIRCLE special form: `circle <cx,cy> <radius>` — a bare number is a radius, not a point
+    if (name === 'CIRCLE' && rest.length === 2 && /^[+-]?(\d+\.?\d*|\.\d+)$/.test(rest[1])) {
+      const c0 = parseCoordEntry(rest[0], state.lastPt || [0, 0]);
+      const rr = Math.abs(parseFloat(rest[1]));
+      if (!c0 || !isFinite(rr) || rr < 0.01) { cmdLog('CIRCLE: bad coordinates'); setPrompt('CIRCLE: could not parse coordinates'); return true; }
+      pickPoint(c0); pickPoint([c0[0] + rr, c0[1]]);
+      return true;
+    }
+    const pts = parsePointTokens(rest);
+    if (!pts) { cmdLog(name + ': bad coordinates'); setPrompt(name + ': could not parse coordinates'); return true; }
+    if (pts.length !== 2) { setPrompt(name + ': needs exactly 2 points'); return true; }
+    if (Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]) < 1e-9) { setPrompt(name + ': points must differ'); return true; }
+    for (const p of pts) pickPoint(p);
+    return true;
+  }
+  if (name === 'MOVE' || name === 'COPY') {
+    const t = name.toLowerCase();
+    setTool(t);
+    if (!state.sel.size) { setPrompt(name + ': nothing selected — click objects, then run ' + name + ' again'); return true; }
+    if (!rest.length) { state.phase = 'base'; setPrompt(name + ': pick base point (or run again with @dx,dy)'); return true; }
+    // delta form: MOVE/COPY @dx,dy  or  dx<angle
+    let d = null;
+    if (rest.length === 1) {
+      const m = rest[0].match(/^@?\s*(-?\d*\.?\d+)\s*<\s*(-?\d*\.?\d+)$/);
+      if (m) {
+        const dist = parseFloat(m[1]), ang = parseFloat(m[2]) * Math.PI / 180;
+        d = [dist * Math.cos(ang), dist * Math.sin(ang)];
+      } else {
+        const pt = parseCoordEntry(rest[0], [0, 0]);
+        if (pt && rest[0].startsWith('@')) d = pt;
+      }
+    } else if (rest.length === 2) {
+      const a = parseCoordEntry(rest[0], null), b = parseCoordEntry(rest[1], null);
+      if (a && b) d = [b[0] - a[0], b[1] - a[1]];
+    }
+    if (!d || !d.every(Number.isFinite)) { setPrompt(name + ': use ' + name + ' @dx,dy  or  ' + name + ' x1,y1 x2,y2'); return true; }
+    const ents = state.doc.entities.filter(e => state.sel.has(e.id) && !lockedLayer(e.layer));
+    if (!ents.length) { setPrompt(name + ': selection is on a locked layer'); return true; }
+    if (name === 'MOVE') {
+      pushUndo();
+      applyTranslate(ents, d);
+      state.dirty = true; markDirty(); renderAll();
+      setPrompt('Moved ' + ents.length + ' object(s) by ' + d[0].toFixed(2) + ',' + d[1].toFixed(2));
+      cmdLog('Moved ' + ents.length + ' by ' + d.map(v => v.toFixed(2)).join(','));
+    } else {
+      pushUndo();
+      const copies = ents.map(cloneEnt);
+      applyTranslate(copies, d);
+      state.doc.entities.push(...copies);
+      state.sel = new Set(copies.map(c => c.id));
+      state.dirty = true; markDirty(); renderAll();
+      setPrompt('Copied ' + copies.length + ' object(s) by ' + d[0].toFixed(2) + ',' + d[1].toFixed(2));
+      cmdLog('Copied ' + copies.length + ' by ' + d.map(v => v.toFixed(2)).join(','));
+    }
+    return true;
+  }
+  if (name === 'OFFSET') {
+    setTool('offset');
+    if (!rest.length) { setPrompt('Offset: click an object, then a side point — or OFFSET <entity-index> <distance>'); return true; }
+    // numeric form: OFFSET <1-based entity index> <distance>
+    const num = rest.map(Number);
+    if (num.length === 2 && Number.isInteger(num[0]) && isFinite(num[1]) && num[0] >= 1 && num[0] <= state.doc.entities.length) {
+      const e = state.doc.entities[Math.floor(num[0]) - 1];
+      if (lockedLayer(e.layer)) { setPrompt('Offset: object is on a locked layer'); return true; }
+      if (Math.abs(num[1]) < 1e-9) { setPrompt('Offset: invalid distance'); return true; }
+      // Stable signed side: left normal of the first segment; positive expands a circle/arc.
+      // Using a bbox centre as a side point degenerates for lines and circles.
+      let calc = null;
+      if (e.type === 'circle' || e.type === 'arc') {
+        if (e.r + num[1] >= 0.01) calc = {newR: e.r + num[1]};
+      } else if (['line', 'rect', 'polyline'].includes(e.type)) {
+        const a = e.type === 'polyline' ? e.pts[0] : e.p1;
+        const b = e.type === 'polyline' ? e.pts[1] : e.type === 'rect' ? [e.p2[0], e.p1[1]] : e.p2;
+        if (a && b) {
+          const dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy);
+          if (len > 1e-9) calc = {ov: [-dy / len * num[1], dx / len * num[1]]};
+        }
+      }
+      if (!calc) { setPrompt('Offset: invalid distance'); return true; }
+      pushUndo();
+      state.doc.entities.push(applyOffset(e, calc));
+      state.dirty = true; markDirty(); renderAll();
+      setPrompt('Offset ' + num[0] + ' by ' + num[1] + ' — pick the next object');
+      cmdLog('Offset ' + num[0] + ' d=' + num[1]);
+    } else {
+      setPrompt('Offset: use OFFSET <entity number> <distance>, or click an object then a side point');
+    }
+    return true;
+  }
+  return false;
+}
+
 function parseCoordEntry(str, ref) {
   const s = (str || '').trim().toLowerCase();
   if (!s) return null;
@@ -1807,14 +1981,16 @@ function parseCoordEntry(str, ref) {
 cmdInput.addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter') {
     ev.preventDefault();
-    const pt = parseCoordEntry(cmdInput.value, state.lastPt);
-    if (!pt) { setPrompt('Command: enter x,y (absolute), @x,y (relative) or distance<angle'); return; }
+    const raw = cmdInput.value;
     cmdInput.value = '';
+    cmdInput.blur();
+    if (raw && raw.trim() && execCommand(raw)) return; // command form: LINE/CIRCLE/RECTANGLE/MOVE/COPY/OFFSET
+    const pt = parseCoordEntry(raw, state.lastPt);
+    if (!pt) { setPrompt('Command: LINE, RECTANGLE, CIRCLE, MOVE @dx,dy, COPY @dx,dy, OFFSET n dist — or x,y / @x,y / dist<angle'); cmdLog(raw.trim() + ': unknown command'); return; }
     if (!PT_TOOLS.includes(state.tool)) {
       setPrompt('Command: pick a drawing tool first (L, P, R, C, A, D, T)');
       return;
     }
-    cmdInput.blur();
     setPrompt('Command: ' + pt[0].toFixed(2) + ',' + pt[1].toFixed(2));
     pickPoint(pt);
   } else if (ev.key === 'Escape') {
