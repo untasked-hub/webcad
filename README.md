@@ -14,6 +14,9 @@ be shared with a link.
 - **Navigate**: pan (middle drag / space), zoom to fit, wheel zoom, grid that adapts to zoom.
 - **Persist**: autosave to PostgreSQL (debounced), explicit save, drawing browser, shareable
   `/d/:id` links.
+- **Reference underlay**: import a PNG/JPEG (≤4 MB, downscaled to 1600 px) as a locked, non-snapping,
+  adjustable-opacity tracing reference; calibrate its scale with two points and a known distance.
+  The underlay is excluded from SVG/DXF export.
 - **Export**: SVG, DXF R12 (opens in AutoCAD / QCAD / LibreCAD), PNG raster of the viewport,
   and the native JSON document (also importable by drag and drop).
 

@@ -28,6 +28,7 @@
       <span class="sep"></span>
       <button class="mb" id="btnZoomExt">Zoom Extents</button>
       <button class="mb" id="btnFit" title="Fit selection or all content (F)">Fit</button>
+      <button class="mb" id="btnHealth" title="Analyse the drawing for duplicates, zero-length objects, stray objects, and empty or missing layers">Health</button>
       <button class="mb" id="btnCommandGuide" aria-controls="commandGuide" aria-expanded="false" title="Open the drafting command guide (?)">Guide <kbd>?</kbd></button>
       <button class="mb" id="btnGrid">Grid</button>
       <span class="sep"></span>
@@ -101,6 +102,10 @@
         <h3>Layers <button class="mini" id="btnAddLayer">+</button></h3>
         <div class="layer-list" id="layerList"></div>
       </section>
+      <section class="panel">
+        <h3>Reference image</h3>
+        <div id="underlayBody" class="underlay-body"></div>
+      </section>
       <section class="panel grow">
         <h3>Properties</h3>
         <div id="props" class="props"><div class="empty">Nothing selected</div></div>
@@ -149,6 +154,19 @@
       <button class="mb accent" id="authGo">Sign in</button>
     </div>
     <div id="authErr" class="auth-err"></div>
+  </div>
+</div>
+
+<input id="fileUnderlay" type="file" accept="image/png,image/jpeg,image/webp,image/*" hidden>
+
+<div class="modal" id="calModal">
+  <div class="modal-box small">
+    <div class="modal-head"><h2>Calibrate reference</h2><button class="mini" id="calClose">✕</button></div>
+    <div class="tip-line" id="calMeasured"></div>
+    <label class="field-label" for="calDist">Real-world distance between the two picked points</label>
+    <input id="calDist" class="text-input" type="number" step="any" min="0" placeholder="e.g. 4200 (mm)">
+    <div class="tip-line err" id="calErr"></div>
+    <div class="modal-foot"><button class="mb" id="calCancel">Cancel</button><button class="mb accent" id="calOk">Apply scale</button></div>
   </div>
 </div>
 
@@ -274,6 +292,25 @@
   <p class="guide-foot">Shortcuts are available while the drawing canvas is active. Escape closes this guide.</p>
 </aside>
 <div class="toast" id="toast"></div>
+<div class="modal" id="healthModal">
+  <div class="modal-box">
+    <div class="modal-head"><h2>Drawing health report</h2><button class="mini" id="healthClose">✕</button></div>
+    <div id="healthBody" class="health-body">
+      <div class="health-summary" id="healthSummary"></div>
+      <div class="health-issues" id="healthIssues"></div>
+    </div>
+    <div class="modal-foot">
+      <label class="print-check health-tol"><input id="healthTol" type="number" min="0.001" step="0.01" value="0.01"> Duplicate tolerance</label>
+      <button class="mb" id="healthRerun">Re-run</button>
+      <button class="mb" id="healthCleanup" title="Remove zero-length/empty objects, exact duplicates and empty unused layers in one undo step">Clean up…</button>
+      <button class="mb" id="healthCopy">Copy JSON</button>
+      <button class="mb accent" id="healthDownload">Download JSON</button>
+    </div>
+    <p class="print-hint">The report never changes your drawing. <b>Clean up…</b> removes zero-length/empty objects, exact duplicates (keeping the first of each group) and empty unused layers as a single undo step. Click an issue with object references to select those objects.</p>
+  </div>
+</div>
+
+<script src="/health.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

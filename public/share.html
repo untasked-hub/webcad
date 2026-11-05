@@ -79,6 +79,7 @@ const stage = document.getElementById('stage');
 
 let view = { x: 0, y: 0, zoom: 1 };
 let doc = null;
+let underlayImage = null;
 
 function cvW() { return stage.clientWidth; }
 function cvH() { return stage.clientHeight; }
@@ -143,6 +144,20 @@ function extentsOf(ents) {
   }
   if (!isFinite(x0)) return null;
   return { x0, y0, x1, y1 };
+}
+
+function drawUnderlay() {
+  const u = doc && doc.underlay;
+  if (!u || !u.visible || !u.src || !underlayImage || !underlayImage.complete || !underlayImage.naturalWidth) return;
+  const tl = w2s([u.x, u.y]);
+  const br = w2s([u.x + u.w, u.y - u.h]);
+  const x = Math.min(tl[0], br[0]), y = Math.min(tl[1], br[1]);
+  const w = Math.abs(br[0] - tl[0]), h = Math.abs(br[1] - tl[1]);
+  if (w < 0.5 || h < 0.5) return;
+  ctx.save();
+  ctx.globalAlpha = Math.max(0.05, Math.min(1, u.opacity == null ? 0.55 : u.opacity));
+  try { ctx.drawImage(underlayImage, x, y, w, h); } catch (_) {}
+  ctx.restore();
 }
 
 function layerOf(name) {
@@ -247,7 +262,15 @@ function resize() {
 }
 
 function fitView() {
-  const ext = extentsOf(doc.entities);
+  let ext = extentsOf(doc.entities);
+  const u = doc.underlay;
+  if (u && u.visible) {
+    const b = { x0: u.x, y0: u.y - u.h, x1: u.x + u.w, y1: u.y };
+    if (ext) {
+      ext.x0 = Math.min(ext.x0, b.x0); ext.y0 = Math.min(ext.y0, b.y0);
+      ext.x1 = Math.max(ext.x1, b.x1); ext.y1 = Math.max(ext.y1, b.y1);
+    } else ext = b;
+  }
   if (!ext) { view = { x: 0, y: 0, zoom: 1 }; return; }
   const w = ext.x1 - ext.x0, h = ext.y1 - ext.y0;
   const pad = 0.08;
@@ -263,6 +286,7 @@ function draw() {
   ctx.fillStyle = '#0b1017';
   ctx.fillRect(0, 0, cvW(), cvH());
   if (!doc) return;
+  drawUnderlay();
   for (const e of doc.entities) drawEntity(e);
 }
 
@@ -298,6 +322,11 @@ if (!m) {
         return;
       }
       doc = d.data;
+      if (doc.underlay && doc.underlay.src) {
+        underlayImage = new Image();
+        underlayImage.onload = () => draw();
+        underlayImage.src = doc.underlay.src;
+      }
       document.getElementById('name').textContent = d.name || 'Untitled';
       document.getElementById('when').textContent =
         d.updated_at ? 'updated ' + new Date(d.updated_at).toLocaleString() : '';

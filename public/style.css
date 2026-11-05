@@ -287,3 +287,37 @@ body{
 #layerCtxMenu .ctx-item{padding:6px 10px;border-radius:5px;cursor:pointer;white-space:nowrap}
 #layerCtxMenu .ctx-item:hover{background:#1f2c3d}
 #layerCtxMenu .ctx-item.danger{color:#ff8f8f}
+
+/* ---------- drawing health report ---------- */
+.health-body{padding:12px 16px;overflow:auto;display:flex;flex-direction:column;gap:10px;min-height:120px}
+.health-figs{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:12px;color:var(--ink2)}
+.health-figs span:not(.health-pill){margin-right:8px}
+.health-pill{display:inline-block;min-width:22px;text-align:center;padding:2px 7px;border-radius:999px;font-family:var(--mono);font-size:11px;font-weight:600;background:#1b2635;color:#eaf1fb}
+.health-pill.err{background:#3a1820;color:#ff8a9a}
+.health-pill.warn{background:#3a2c14;color:#ffb454}
+.health-pill.info{background:#142838;color:#7fd1ff}
+.health-ext{font-size:11.5px;color:var(--ink3);font-family:var(--mono)}
+.health-ok{color:#a6e3a1}
+.health-issues{display:flex;flex-direction:column;gap:5px}
+.health-issue{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-left-width:3px;border-radius:7px;background:#0c121a;cursor:pointer;font-size:12.5px}
+.health-issue:hover{background:#121b26;border-color:var(--line2)}
+.health-issue.warning{border-left-color:#ffb454}
+.health-issue.error{border-left-color:#ff6b81}
+.health-issue.info{border-left-color:#7fd1ff}
+.hi-sev{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink3);width:56px;flex:none}
+.hi-msg{flex:1;color:#e2eaf5}
+.hi-count{font-family:var(--mono);font-size:10.5px;color:var(--ink3)}
+.health-tol{margin:0 auto 0 0}
+.health-tol input{width:70px;padding:4px 6px;border-radius:6px;background:#0b1119;border:1px solid var(--line2);color:#eaf1fb;font:inherit;font-size:12px}
+
+/* ---------- reference image underlay (round 44) ---------- */
+.underlay-body { display: flex; flex-direction: column; gap: 8px; padding: 2px 0 4px; }
+.underlay-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.underlay-name { font-size: 12px; font-weight: 600; color: var(--fg, #e8eef5); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.underlay-sub { font-size: 11px; opacity: .62; }
+.underlay-row { display: flex; align-items: center; gap: 6px; font-size: 11px; opacity: .85; flex-wrap: wrap; }
+.underlay-row input[type="range"] { flex: 1 1 100%; min-width: 80px; accent-color: #ffb454; }
+.field-label { display: block; font-size: 11px; opacity: .7; margin: 8px 0 4px; }
+.tip-line { font-size: 11px; opacity: .72; margin-bottom: 4px; }
+.tip-line.err { color: #ff6b6b; min-height: 14px; }

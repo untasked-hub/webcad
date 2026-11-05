@@ -34,6 +34,7 @@ const state = {
   filletPreview: null,
   trimPick: null,       // boundary entity (trim) or null (extend: all entities as boundaries)
   trimHover: null,      // preview { ent, pt1, pt2 } for trim/extend
+  calibPts: [],         // 2 world points picked while calibrating the underlay
 };
 
 const TAU = Math.PI * 2;
@@ -51,6 +52,7 @@ function emptyDoc() {
     ],
     entities: [],
     currentLayer: 'Walls',
+    underlay: null,
   };
 }
 
@@ -206,6 +208,182 @@ function visibleEntities() {
 }
 function lockedLayer(name) { const L = layerOf(name); return L ? L.locked : false; }
 
+/* ---------- reference image underlay ---------- */
+/* The underlay is a doc-level object, not an entity: it is invisible to pickAt,
+   snapCandidates, extentsOf and every export loop by construction. It is a
+   locked, non-snapping tracing reference. */
+const UNDERLAY_MAX_PX = 1600;        // downscale target for the long edge
+const UNDERLAY_MAX_SRC_BYTES = 4 * 1024 * 1024;   // refuse bigger source files
+const UNDERLAY_MAX_DATA_CHARS = 3.2 * 1024 * 1024; // refuse bigger encoded payload
+
+const underlayImages = new Map();    // src -> HTMLImageElement (decoded)
+
+function ensureUnderlayImage(u) {
+  if (!u || !u.src) return null;
+  let img = underlayImages.get(u.src);
+  if (img) return img.complete && img.naturalWidth ? img : (img.complete ? null : img);
+  img = new Image();
+  img.onload = () => { draw(); };
+  img.onerror = () => { toast('Underlay image failed to decode'); };
+  img.src = u.src;
+  underlayImages.set(u.src, img);
+  return img;
+}
+
+function underlayReady(u) {
+  const img = ensureUnderlayImage(u);
+  return img && img.complete && img.naturalWidth > 0 ? img : null;
+}
+
+/* World-space corners (clockwise from top-left). No rotation in this round. */
+function underlayCorners(u) {
+  if (!u) return [];
+  return [[u.x, u.y], [u.x + u.w, u.y], [u.x + u.w, u.y - u.h], [u.x, u.y - u.h]];
+}
+
+function underlayBBox(u) {
+  if (!u) return null;
+  return { x0: u.x, y0: u.y - u.h, x1: u.x + u.w, y1: u.y };
+}
+
+function drawUnderlay() {
+  const u = state.doc && state.doc.underlay;
+  if (!u || !u.visible) return;
+  const img = underlayReady(u);
+  if (!img) return;
+  const tl = w2s([u.x, u.y]);
+  const br = w2s([u.x + u.w, u.y - u.h]);
+  const x = Math.min(tl[0], br[0]), y = Math.min(tl[1], br[1]);
+  const w = Math.abs(br[0] - tl[0]), h = Math.abs(br[1] - tl[1]);
+  if (w < 0.5 || h < 0.5) return;
+  ctx.save();
+  ctx.globalAlpha = Math.max(0.05, Math.min(1, u.opacity == null ? 0.55 : u.opacity));
+  try { ctx.drawImage(img, x, y, w, h); } catch (e) { /* ignore */ }
+  ctx.restore();
+  // calibration picks + dashed frame while the calibrate tool is active
+  if (state.tool === 'underlaycal') {
+    ctx.save();
+    ctx.strokeStyle = '#ffb454';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(x, y, w, h);
+    ctx.setLineDash([]);
+    const pts = state.calibPts || [];
+    for (const q of pts) {
+      const sq = w2s(q);
+      ctx.beginPath(); ctx.arc(sq[0], sq[1], 4, 0, TAU); ctx.fillStyle = '#ffb454'; ctx.fill();
+    }
+    if (pts.length === 2) {
+      const a = w2s(pts[0]), b = w2s(pts[1]);
+      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+/* Fit a freshly imported image into the current view and place it in the world. */
+function placeUnderlay(u, fitFactor) {
+  const img = underlayReady(u);
+  if (!img) return u;
+  const iw = img.naturalWidth || 1, ih = img.naturalHeight || 1;
+  const viewW = cvW() / state.view.zoom, viewH = cvH() / state.view.zoom;
+  const k = (fitFactor || 0.7);
+  const scale = Math.min((viewW * k) / iw, (viewH * k) / ih);
+  u.w = iw * scale;
+  u.h = ih * scale;
+  u.x = state.view.x - u.w / 2;
+  u.y = state.view.y + u.h / 2;
+  return u;
+}
+
+/* Downscale in the browser, then keep only the encoded data URL in the document. */
+function readUnderlayFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) { reject(new Error('No file')); return; }
+    if (file.size > UNDERLAY_MAX_SRC_BYTES) {
+      reject(new Error('Image is larger than 4 MB — use a smaller reference')); return;
+    }
+    if (!/^image\//.test(file.type || '')) { reject(new Error('That is not an image file')); return; }
+    const rd = new FileReader();
+    rd.onerror = () => reject(new Error('Could not read the file'));
+    rd.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Could not decode the image'));
+      img.onload = () => {
+        const iw = img.naturalWidth, ih = img.naturalHeight;
+        if (!iw || !ih) { reject(new Error('Image has no size')); return; }
+        const long = Math.max(iw, ih);
+        const scale = long > UNDERLAY_MAX_PX ? UNDERLAY_MAX_PX / long : 1;
+        const W = Math.max(1, Math.round(iw * scale)), H = Math.max(1, Math.round(ih * scale));
+        const c2 = document.createElement('canvas');
+        c2.width = W; c2.height = H;
+        const g = c2.getContext('2d');
+        g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H);   // JPEG has no alpha
+        g.drawImage(img, 0, 0, W, H);
+        let data;
+        try { data = c2.toDataURL('image/jpeg', 0.82); } catch (e) { reject(new Error('Could not encode the image')); return; }
+        if (data.length > UNDERLAY_MAX_DATA_CHARS) {
+          reject(new Error('Reference is still too large after downscaling — try a smaller image')); return;
+        }
+        resolve({ src: data, iw: W, ih: H, name: file.name || 'reference.jpg' });
+      };
+      img.src = String(rd.result);
+    };
+    rd.readAsDataURL(file);
+  });
+}
+
+function setUnderlay(src, name, iw, ih) {
+  pushUndo();
+  const u = { src, name: name || 'reference.jpg', x: 0, y: 0, w: 100, h: 100,
+              opacity: 0.55, visible: true, iw: iw || 0, ih: ih || 0 };
+  state.doc.underlay = u;
+  // decode before fitting so natural size is known
+  const img = ensureUnderlayImage(u);
+  if (img && img.complete && img.naturalWidth) placeUnderlay(u);
+  else if (img) img.addEventListener('load', () => { placeUnderlay(u); draw(); renderUnderlayPanel(); }, { once: true });
+  if (iw && ih) placeUnderlay(u);
+  state.dirty = true; markDirty();
+  renderUnderlayPanel();
+  draw();
+  return u;
+}
+
+function clearUnderlay() {
+  if (!state.doc.underlay) { toast('No reference image'); return; }
+  pushUndo();
+  state.doc.underlay = null;
+  state.calibPts = [];
+  if (state.tool === 'underlaycal') setTool('select');
+  state.dirty = true; markDirty();
+  renderUnderlayPanel();
+  draw();
+  toast('Reference image removed');
+}
+
+/* Uniform scale about the first picked point so the measured span matches reality. */
+function calibrateUnderlay(realDist) {
+  const u = state.doc.underlay;
+  const pts = state.calibPts || [];
+  if (!u || pts.length !== 2) return null;
+  const measured = dist(pts[0], pts[1]);
+  if (!(measured > 1e-6)) return { ok: false, reason: 'The two points are the same — pick two distinct points.' };
+  if (!(realDist > 0)) return { ok: false, reason: 'Enter a positive real-world distance.' };
+  const k = realDist / measured;
+  const [ax, ay] = pts[0];
+  pushUndo();
+  u.x = ax + (u.x - ax) * k;
+  u.y = ay + (u.y - ay) * k;
+  u.w *= k;
+  u.h *= k;
+  u.scale = (u.scale || 1) * k;
+  u.calibrated = realDist;
+  state.dirty = true; markDirty();
+  renderUnderlayPanel();
+  draw();
+  return { ok: true, k, measured, realDist };
+}
+
 /* ---------- snapping ---------- */
 function snapCandidates() {
   const out = [];
@@ -275,7 +453,8 @@ function snapPoint(world) {
 
 /* ---------- undo ---------- */
 function snapshot() {
-  return JSON.stringify({ entities: state.doc.entities, layers: state.doc.layers, currentLayer: state.doc.currentLayer });
+  return JSON.stringify({ entities: state.doc.entities, layers: state.doc.layers,
+    currentLayer: state.doc.currentLayer, underlay: state.doc.underlay || null });
 }
 function pushUndo() {
   state.undo.push(snapshot());
@@ -287,6 +466,8 @@ function restore(json) {
   state.doc.entities = d.entities;
   state.doc.layers = d.layers;
   state.doc.currentLayer = d.currentLayer;
+  state.doc.underlay = d.underlay || null;
+  if (state.doc.underlay) ensureUnderlayImage(state.doc.underlay);
   const ids = new Set(state.doc.entities.map(e => e.id));
   state.sel = new Set([...state.sel].filter(id => ids.has(id)));
   state.dirty = true;
@@ -672,6 +853,7 @@ function draw() {
   ctx.fillRect(0, 0, cvW(), cvH());
   drawGrid();
   if (state.doc) {
+    drawUnderlay();
     for (const e of state.doc.entities) drawEntity(e);
     drawPreview();
     const selEnts = state.doc.entities.filter(e => state.sel.has(e.id));
@@ -699,6 +881,7 @@ function draw() {
 function renderAll() {
   draw();
   renderLayers();
+  renderUnderlayPanel();
   renderProps();
   renderSelInfo();
   const n = state.doc ? state.doc.entities.length : 0;
@@ -706,6 +889,119 @@ function renderAll() {
 }
 
 /* ---------- side panels ---------- */
+function renderUnderlayPanel() {
+  const box = document.getElementById('underlayBody');
+  if (!box) return;
+  const u = state.doc && state.doc.underlay;
+  if (!u) {
+    box.innerHTML =
+      '<div class="empty">No reference image — import a PNG/JPEG floor plan or scan to trace over</div>' +
+      '<div class="btn-row"><button class="mini wide" id="btnUnderlayImport">Import image…</button></div>';
+    const b = document.getElementById('btnUnderlayImport');
+    if (b) b.onclick = () => triggerUnderlayFile();
+    return;
+  }
+  const opPct = Math.round((u.opacity == null ? 0.55 : u.opacity) * 100);
+  const wSpan = fmt(u.w || 0) + ' × ' + fmt(u.h || 0);
+  box.innerHTML =
+    '<div class="underlay-meta">' +
+      '<div class="underlay-name" title="' + esc(u.name || 'reference') + '">' + esc(u.name || 'reference') + '</div>' +
+      '<div class="underlay-sub">' + wSpan + ' units · locked (no snap)</div>' +
+    '</div>' +
+    '<label class="underlay-row">Opacity <span id="underlayOpVal">' + opPct + '%</span>' +
+      '<input id="underlayOpacity" type="range" min="10" max="100" step="5" value="' + opPct + '">' +
+    '</label>' +
+    '<div class="btn-row">' +
+      '<button class="mini" id="btnUnderlayCal" title="Pick two points on the image and enter the real-world distance">2-pt calibrate</button>' +
+      '<button class="mini" id="btnUnderlayToggle" title="Show or hide the reference image">' + (u.visible ? 'Hide' : 'Show') + '</button>' +
+      '<button class="mini" id="btnUnderlayReplace" title="Replace the reference image">Replace…</button>' +
+      '<button class="mini" id="btnUnderlayRemove" title="Remove the reference image">Remove</button>' +
+    '</div>';
+  const sl = document.getElementById('underlayOpacity');
+  if (sl) {
+    sl.oninput = () => {
+      u.opacity = Math.max(0.1, Math.min(1, Number(sl.value) / 100));
+      const v = document.getElementById('underlayOpVal');
+      if (v) v.textContent = Math.round(u.opacity * 100) + '%';
+      draw();
+    };
+    sl.onchange = () => { state.dirty = true; markDirty(); };
+  }
+  const cal = document.getElementById('btnUnderlayCal');
+  if (cal) cal.onclick = () => startUnderlayCalibrate();
+  const tog = document.getElementById('btnUnderlayToggle');
+  if (tog) tog.onclick = () => { u.visible = !u.visible; state.dirty = true; markDirty(); renderUnderlayPanel(); draw(); };
+  const rep = document.getElementById('btnUnderlayReplace');
+  if (rep) rep.onclick = () => triggerUnderlayFile();
+  const rem = document.getElementById('btnUnderlayRemove');
+  if (rem) rem.onclick = () => clearUnderlay();
+}
+
+function triggerUnderlayFile() {
+  const inp = document.getElementById('fileUnderlay');
+  if (inp) inp.click();
+}
+
+function startUnderlayCalibrate() {
+  if (!state.doc || !state.doc.underlay) { toast('Import a reference image first'); return; }
+  state.doc.underlay.visible = true;
+  state.calibPts = [];
+  setTool('underlaycal');
+}
+
+function openCalibrateModal(measured) {
+  const m = document.getElementById('calModal');
+  if (!m) return;
+  const info = document.getElementById('calMeasured');
+  if (info) info.textContent = fmt(measured) + ' drawing units between picked points';
+  const inp = document.getElementById('calDist');
+  if (inp) { inp.value = fmt(measured); setTimeout(() => { inp.focus(); inp.select(); }, 30); }
+  const err = document.getElementById('calErr');
+  if (err) err.textContent = '';
+  m.classList.add('show');
+}
+
+function closeCalibrateModal() {
+  const m = document.getElementById('calModal');
+  if (m) m.classList.remove('show');
+}
+
+function wireCalibrateModal() {
+  const m = document.getElementById('calModal');
+  const ok = document.getElementById('calOk');
+  const cancel = document.getElementById('calCancel');
+  const close = document.getElementById('calClose');
+  const inp = document.getElementById('calDist');
+  if (ok) ok.onclick = () => submitCalibrateModal();
+  const bail = () => { closeCalibrateModal(); state.calibPts = []; if (state.tool === 'underlaycal') setTool('select'); draw(); };
+  if (cancel) cancel.onclick = bail;
+  if (close) close.onclick = bail;
+  if (m) m.onclick = (ev) => { if (ev.target === m) bail(); };
+  if (inp) {
+    inp.addEventListener('keydown', (ev) => {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') { ev.preventDefault(); submitCalibrateModal(); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); bail(); }
+    });
+  }
+}
+
+/* Move/resize the underlay by dragging with the calibrate tool held down? No: the
+   underlay is locked. Position and size only change through import and calibration. */
+function submitCalibrateModal() {
+  const inp = document.getElementById('calDist');
+  const err = document.getElementById('calErr');
+  const v = inp ? Number(String(inp.value).trim()) : NaN;
+  const r = calibrateUnderlay(v);
+  if (!r || !r.ok) {
+    if (err) err.textContent = (r && r.reason) || 'Enter a positive distance.';
+    return;
+  }
+  closeCalibrateModal();
+  setTool('select');
+  toast('Reference scaled ×' + fmt(r.k) + ' (' + fmt(r.measured) + ' → ' + fmt(r.realDist) + ')');
+}
+
 function renderLayers() {
   const box = document.getElementById('layerList');
   box.innerHTML = '';
@@ -966,6 +1262,7 @@ const PROMPTS = {
   trim: 'Trim: pick boundary object (or right-click to skip and use nearest intersections)',
   extend: 'Extend: pick an object to reach the next boundary',
   break: 'Break: pick an object, then pick where to split it',
+  underlaycal: 'Underlay calibrate: click the first point of a known distance on the image',
   vertex: 'Vertex edit: click a polyline, then drag a vertex (Del = delete one, midpoint circles = insert)',
 };
 
@@ -986,6 +1283,7 @@ function setTool(t) {
   state.vertexEnt = null;
   state.vertexIdx = null;
   state.vertexHover = null;
+  if (t !== 'underlaycal') state.calibPts = [];
   document.querySelectorAll('.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
   setPrompt(PROMPTS[t] || 'Ready');
   cv.classList.toggle('grab', t === 'select');
@@ -1396,6 +1694,21 @@ cv.addEventListener('mousedown', (ev) => {
                        x1: ev.clientX - rect.left, y1: ev.clientY - rect.top, cross: false };
       renderAll();
     }
+    return;
+  }
+
+  if (t === 'underlaycal') {
+    if (!state.doc.underlay) { setPrompt('Underlay calibrate: import a reference image first'); return; }
+    state.calibPts = (state.calibPts || []).concat([p]);
+    if (state.calibPts.length < 2) {
+      setPrompt('Underlay calibrate: click the second point of the known distance');
+      draw();
+      return;
+    }
+    const measured = dist(state.calibPts[0], state.calibPts[1]);
+    setPrompt('Underlay calibrate: measured ' + fmt(measured) + ' drawing units — enter the real distance');
+    openCalibrateModal(measured);
+    draw();
     return;
   }
 
@@ -2715,6 +3028,7 @@ function docPayload() {
       layers: state.doc.layers,
       entities: state.doc.entities,
       currentLayer: state.doc.currentLayer,
+      underlay: state.doc.underlay || null,
     },
   };
 }
@@ -2756,7 +3070,9 @@ function loadDoc(data, id, name) {
     layers: (data && data.layers && data.layers.length) ? data.layers : emptyDoc().layers,
     entities: (data && Array.isArray(data.entities)) ? data.entities : [],
     currentLayer: (data && data.currentLayer) || 'Walls',
+    underlay: (data && data.underlay) ? data.underlay : null,
   };
+  if (state.doc.underlay) ensureUnderlayImage(state.doc.underlay);
   state.drawingId = id || null;
   state.sel.clear();
   state.undo.length = 0;
@@ -3021,13 +3337,17 @@ function buildDXFExportPlan(units) {
   const counts = (map) => Object.keys(map).sort().map(k => k + ': ' + map[k]).join(', ');
   const exportedCount = Object.values(exported).reduce((a, b) => a + b, 0);
   const omittedCount = Object.values(omitted).reduce((a, b) => a + b, 0);
+  const underlayNote = state.doc.underlay
+    ? 'Reference image underlay: omitted (raster tracing reference, not DXF geometry).'
+    : null;
   const summary = [
     'Source units: unknown / unset',
     'Output units: ' + unitLabel,
     'Conversion: none — coordinate values exported as-is.',
     exportedCount ? 'Included DXF entities (' + exportedCount + '): ' + counts(exported) : 'Included DXF entities: none',
     omittedCount ? 'Omitted drawing objects (' + omittedCount + '): ' + counts(omitted) : 'Omitted drawing objects: none',
-  ].join('\n');
+    underlayNote,
+  ].filter(Boolean).join('\n');
   return { content: out.join('\n') + '\n', summary, exported, omitted, units: unitLabel };
 }
 
@@ -3184,6 +3504,110 @@ function runExport(kind) {
   const fn = EXPORTERS[kind];
   if (fn) fn();
 }
+
+/* ---------- drawing health report ---------- */
+function healthReport() {
+  const H = window.AutoKadHealth;
+  if (!H) return null;
+  const el = document.getElementById('healthTol');
+  const tol = el ? Math.max(0.001, parseFloat(el.value) || 0.01) : 0.01;
+  return H.reportJSON(docName(), { layers: state.doc.layers, entities: state.doc.entities }, { tolerance: tol });
+}
+
+function renderHealth() {
+  const rep = healthReport();
+  const body = document.getElementById('healthIssues');
+  const sum = document.getElementById('healthSummary');
+  if (!body || !sum) return;
+  if (!rep) { body.innerHTML = '<div class="empty">Health analysis unavailable</div>'; return; }
+  const s = rep.report.summary;
+  const badge = (n, cls) => '<span class="health-pill ' + cls + '">' + n + '</span>';
+  sum.innerHTML =
+    '<div class="health-figs">' +
+    badge(s.entities, 'neutral') + '<span>objects</span>' +
+    badge(s.layersUsed + '/' + s.layers, 'neutral') + '<span>layers used</span>' +
+    badge(s.errors, 'err') + '<span>errors</span>' +
+    badge(s.warnings, 'warn') + '<span>warnings</span>' +
+    badge(s.infos, 'info') + '<span>notes</span>' +
+    '</div>' +
+    '<div class="health-ext">' + (rep.report.extents
+      ? 'Extents ' + fmt(rep.report.extents.x1 - rep.report.extents.x0) + ' × ' + fmt(rep.report.extents.y1 - rep.report.extents.y0) +
+        ' (' + fmt(rep.report.extents.x0) + ', ' + fmt(rep.report.extents.y0) + ') – (' + fmt(rep.report.extents.x1) + ', ' + fmt(rep.report.extents.y1) + ')'
+      : 'No geometry') + (s.clean ? ' · <strong class="health-ok">No issues found</strong>' : '') + '</div>';
+
+  if (!rep.report.issues.length) {
+    body.innerHTML = '<div class="empty">The drawing is clean at the current tolerance.</div>';
+  } else {
+    body.innerHTML = rep.report.issues.map((it, i) =>
+      '<div class="health-issue ' + it.severity + '" data-i="' + i + '">' +
+      '<span class="hi-sev">' + it.severity + '</span>' +
+      '<span class="hi-msg">' + esc(it.message) + '</span>' +
+      (it.entityIds && it.entityIds.length ? '<span class="hi-count">' + it.entityIds.length + ' obj</span>' : '') +
+      '</div>').join('');
+    body.querySelectorAll('.health-issue').forEach(row => {
+      row.onclick = () => {
+        const it = rep.report.issues[parseInt(row.dataset.i, 10)];
+        if (!it || !it.entityIds || !it.entityIds.length) { toast('No objects to select for this issue'); return; }
+        state.sel = new Set(it.entityIds.filter(id => state.doc.entities.some(e => e.id === id)));
+        renderAll(); draw();
+        if (state.sel.size) fitView();
+        toast('Selected ' + state.sel.size + ' object' + (state.sel.size === 1 ? '' : 's') + ' for this issue');
+      };
+    });
+  }
+}
+
+function openHealth() {
+  renderHealth();
+  const m = document.getElementById('healthModal');
+  if (m) m.classList.add('show');
+}
+function closeHealth() {
+  const m = document.getElementById('healthModal');
+  if (m) m.classList.remove('show');
+}
+function healthJSONText() {
+  const rep = healthReport();
+  return rep ? JSON.stringify(rep, null, 2) : '';
+}
+
+/* Apply the health cleanup plan: one undo step, removes only what the report flags. */
+function cleanupFromHealth() {
+  const H = window.AutoKadHealth;
+  if (!H || typeof H.planCleanup !== 'function') { toast('Cleanup unavailable'); return; }
+  const el = document.getElementById('healthTol');
+  const tol = el ? Math.max(0.001, parseFloat(el.value) || 0.01) : 0.01;
+  const plan = H.planCleanup(
+    { layers: state.doc.layers, entities: state.doc.entities, currentLayer: state.doc.currentLayer },
+    { tolerance: tol }
+  );
+  const c = plan.counts;
+  if (!plan.changes) { toast('Nothing to clean up'); setPrompt('Health cleanup: drawing already clean'); return; }
+  const parts = [];
+  if (c.zeroLength) parts.push(c.zeroLength + ' zero-length/empty object' + (c.zeroLength === 1 ? '' : 's'));
+  if (c.duplicate) parts.push(c.duplicate + ' duplicate' + (c.duplicate === 1 ? '' : 's'));
+  if (c.emptyLayers) parts.push(c.emptyLayers + ' empty layer' + (c.emptyLayers === 1 ? '' : 's'));
+  if (!window.confirm('Clean up this drawing?\n\nRemove ' + parts.join(', ') +
+      '.\n\nThis is a single undo step.')) return;
+
+  pushUndo();
+  const gone = new Set(plan.entities);
+  if (gone.size) state.doc.entities = state.doc.entities.filter(e => !gone.has(e.id));
+  if (plan.layers.length) {
+    const drop = new Set(plan.layers);
+    state.doc.layers = state.doc.layers.filter(l => !drop.has(l.name));
+  }
+  for (const id of Array.from(state.sel)) if (gone.has(id)) state.sel.delete(id);
+  state.dirty = true; markDirty();
+  renderAll();
+  renderHealth();
+  const msg = 'Cleaned up: ' + (c.entities || 0) + ' object' + (c.entities === 1 ? '' : 's') +
+              ', ' + (c.emptyLayers || 0) + ' layer' + (c.emptyLayers === 1 ? '' : 's');
+  toast(msg + ' (undo to revert)');
+  setPrompt(msg + ' — ' + 'Ctrl+Z to undo');
+  cmdLog(msg);
+}
+
 
 /* ---------- import (JSON drag & drop) ---------- */
 function importJSONText(text) {
@@ -3531,6 +3955,26 @@ function wireUI() {
   on('btnMirrorYCopy', () => mirrorSelection('y', true));
   on('btnArray', () => arraySelection());
   on('btnArrayPolar', () => polarArrayDialog());
+  on('btnHealth', () => openHealth());
+  on('healthClose', () => closeHealth());
+  on('healthRerun', () => renderHealth());
+  on('healthCleanup', () => cleanupFromHealth());
+  on('healthDownload', () => {
+    const t = healthJSONText();
+    if (!t) return;
+    download(slug() + '-health.json', t, 'application/json');
+    toast('Downloaded health report');
+  });
+  on('healthCopy', async () => {
+    const t = healthJSONText();
+    if (!t) return;
+    try { await navigator.clipboard.writeText(t); toast('Health report JSON copied'); }
+    catch (e) { download(slug() + '-health.json', t, 'application/json'); toast('Clipboard blocked - downloaded instead'); }
+  });
+  const hm = document.getElementById('healthModal');
+  if (hm) hm.onclick = (ev) => { if (ev.target === hm) closeHealth(); };
+  const ht = document.getElementById('healthTol');
+  if (ht) ht.addEventListener('change', () => renderHealth());
 
   const exp = document.getElementById('btnExport');
   const menu = document.getElementById('exportMenu');
@@ -3571,6 +4015,18 @@ function wireUI() {
   tg('tgPolar', 'polar');
   tg('tgGrid', 'showGrid');
 
+  // reference image underlay (round 44)
+  const uf = document.getElementById('fileUnderlay');
+  if (uf) uf.addEventListener('change', () => {
+    const f = uf.files && uf.files[0];
+    uf.value = '';
+    if (!f) return;
+    readUnderlayFile(f).then(r => {
+      setUnderlay(r.src, r.name, r.iw, r.ih);
+      toast('Reference image added \u2014 use 2-pt calibrate to set the real scale');
+    }).catch(err => toast('Reference image: ' + (err.message || err)));
+  });
+  wireCalibrateModal();
   const dn = document.getElementById('docName');
   if (dn) {
     dn.addEventListener('input', () => { state.dirty = true; markDirty(); });
@@ -3651,6 +4107,10 @@ window.__ak = {
   filletGeom, applyFillet, defaultFilletRadius,
   trimGeom, applyTrim, extendGeom, applyExtend, entSegsFlat, rayEntIsects, rectCornersOf,
   parseCoordEntry,
+  healthReport, openHealth,
+  readUnderlayFile, setUnderlay, clearUnderlay, calibrateUnderlay, startUnderlayCalibrate,
+  placeUnderlay, underlayBBox, underlayCorners, triggerUnderlayFile, submitCalibrateModal,
+  openCalibrateModal, renderUnderlayPanel, buildSVGString, buildDXFExportPlan, loadDoc, docPayload,
   get state() { return state; },
   get currentUser() { return currentUser; },
   openAuth,
