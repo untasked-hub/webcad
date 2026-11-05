@@ -1,0 +1,18 @@
+{
+    "verify": [
+        "docker compose -f compose.yaml config"
+    ],
+    "app": {
+        "blueprint": "static",
+        "versions": {},
+        "ui_kit": "none",
+        "icon_family": "none",
+        "deploy": "Node 20 container on hosted app",
+        "guides": [
+            {
+                "id": "untasked-deploy-contract",
+                "reviewed_at": "2026-10-30"
+            }
+        ]
+    }
+}

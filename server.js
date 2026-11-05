@@ -57,16 +57,8 @@ const EMPTY_DOC = {
 async function init() {
   pool = await pickPool(process.env.DATABASE_URL);
   // DDL/seed uses the migration role when present: the runtime role cannot CREATE in schema app.
-  const adminUrl = process.env.MIGRATION_DATABASE_URL || process.env.DATABASE_URL;
-  let admin = pool;
-  if (process.env.MIGRATION_DATABASE_URL) {
-    try {
-      admin = await pickPool(process.env.MIGRATION_DATABASE_URL);
-    } catch (err) {
-      console.warn('migration role unavailable, falling back to runtime role:', err.message);
-      admin = pool;
-    }
-  }
+  if (!process.env.MIGRATION_DATABASE_URL) throw new Error('MIGRATION_DATABASE_URL is required');
+  const admin = await pickPool(process.env.MIGRATION_DATABASE_URL);
   const db = admin;
   await db.query(`
     CREATE TABLE IF NOT EXISTS drawings (
@@ -579,5 +571,5 @@ init()
   })
   .catch((err) => {
     console.error('startup failed', err);
-    app.listen(PORT, () => console.log('WebCAD started without db on ' + PORT));
+    process.exit(1);
   });
