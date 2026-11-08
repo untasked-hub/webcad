@@ -31,6 +31,7 @@
       <button class="mb" id="btnHealth" title="Analyse the drawing for duplicates, zero-length objects, stray objects, and empty or missing layers">Health</button>
       <button class="mb" id="btnCommandGuide" aria-controls="commandGuide" aria-expanded="false" title="Open the drafting command guide (?)">Guide <kbd>?</kbd></button>
       <button class="mb" id="btnGrid">Grid</button>
+      <button class="mb" id="btnLaunch" title="Reopen the getting-started panel (blank drawings only)">Get started</button>
       <span class="sep"></span>
       <div class="dropdown">
         <button class="mb" id="btnExport">Export ▾</button>
@@ -86,7 +87,7 @@
       <canvas id="cv"></canvas>
       <div class="hud" id="hud">
         <div class="hud-row"><span class="k">X</span><span id="hx">0.00</span><span class="k">Y</span><span id="hy">0.00</span></div>
-        <div class="hud-row"><span class="k">ZOOM</span><span id="hz">100%</span></div>
+        <div class="hud-row"><span class="k">ZOOM</span><span id="hz">100%</span><span class="k">UNITS</span><span id="hun">mm</span></div>
         <div class="hud-row" id="hud-measure" style="display:none"><span class="k">L</span><span id="hl">—</span><span class="k">A</span><span id="ha">—</span><span class="k">Δ</span><span id="hd">—</span></div>
         <div class="hud-row" id="hud-snap" style="display:none"><span class="k">SNAP</span><span id="hs">—</span></div>
       </div>
@@ -101,6 +102,7 @@
       <section class="panel">
         <h3>Layers <button class="mini" id="btnAddLayer">+</button></h3>
         <div class="layer-list" id="layerList"></div>
+        <div class="preset-row"><div class="preset-list" id="presetList"></div><button class="mini" id="btnSavePreset" title="Save the current layer visibility as a named view">+ View</button></div>
       </section>
       <section class="panel">
         <h3>Reference image</h3>
@@ -135,6 +137,18 @@
       <span id="countInfo">0 entities</span>
     </div>
   </footer>
+</div>
+
+<div class="modal" id="replaceModal">
+  <div class="modal-box small">
+    <div class="modal-head"><h2>Unsaved changes</h2><button class="mini" id="replaceClose" aria-label="Cancel">✕</button></div>
+    <p class="replace-msg" id="replaceMsg"></p>
+    <div class="modal-foot replace-foot">
+      <button type="button" class="mb" id="replaceCancel">Cancel</button>
+      <button type="button" class="mb" id="replaceDiscard">Discard</button>
+      <button type="button" class="mb accent" id="replaceSave">Save &amp; continue</button>
+    </div>
+  </div>
 </div>
 
 <div class="modal" id="openModal">
@@ -258,6 +272,7 @@
       <div class="guide-row" data-guide-item data-search="paste ctrl v"><span><b>Paste selection</b><small>Place a copied selection</small></span><kbd>Ctrl V</kbd></div>
       <div class="guide-row" data-guide-item data-search="undo redo ctrl z y"><span><b>Undo / redo</b><small>Undo; redo with Ctrl+Y or Ctrl+Shift+Z</small></span><kbd>Ctrl Z</kbd></div>
       <div class="guide-row" data-guide-item data-search="select all ctrl a"><span><b>Select all</b><small>Select every object</small></span><kbd>Ctrl A</kbd></div>
+      <div class="guide-row" data-guide-item data-search="nudge arrow keys move selection shift"><span><b>Nudge</b><small>Move the selection 1 unit (Shift for 10)</small></span><kbd>Arrows</kbd></div>
       <div class="guide-row" data-guide-item data-search="mirror horizontal vertical shift x y"><span><b>Mirror</b><small>Flip selection about its centre</small></span><kbd>Shift X/Y</kbd></div>
       <div class="guide-row" data-guide-item data-search="array rectangular shift a"><span><b>Rectangular array</b><small>Repeat selected objects in rows/columns</small></span><kbd>Shift A</kbd></div>
       <div class="guide-row" data-guide-item data-search="polar array shift p"><span><b>Polar array</b><small>Repeat selected objects around a centre</small></span><kbd>Shift P</kbd></div>

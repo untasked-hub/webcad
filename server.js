@@ -216,11 +216,13 @@ app.get('/api/drawings', async (req, res) => {
     const { rows } = await pool.query(
       req.user
         ? `SELECT id, name, owner, rev, created_at, updated_at,
+                  (owner IS NOT NULL AND owner = $1 AND share_token IS NOT NULL) AS is_shared,
                   jsonb_array_length(COALESCE(data->'entities', '[]'::jsonb)) AS entity_count
              FROM drawings
             WHERE owner IS NULL OR owner = $1
             ORDER BY updated_at DESC LIMIT 100`
         : `SELECT id, name, owner, rev, created_at, updated_at,
+                  FALSE AS is_shared,
                   jsonb_array_length(COALESCE(data->'entities', '[]'::jsonb)) AS entity_count
              FROM drawings
             WHERE owner IS NULL
@@ -251,8 +253,10 @@ app.post('/api/drawings', requireAuth, async (req, res) => {
 app.get('/api/drawings/:id', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'SELECT id, name, data, rev, created_at, updated_at, owner FROM drawings WHERE id = $1',
-      [req.params.id]
+      `SELECT id, name, data, rev, created_at, updated_at, owner,
+              (owner IS NOT NULL AND owner = $2 AND share_token IS NOT NULL) AS is_shared
+         FROM drawings WHERE id = $1`,
+      [req.params.id, req.user || null]
     );
     if (!rows.length) return res.status(404).json({ error: 'not found' });
     if (rows[0].owner && rows[0].owner !== req.user) {
