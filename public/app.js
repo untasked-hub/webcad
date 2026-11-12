@@ -3219,6 +3219,11 @@ window.addEventListener('keydown', (ev) => {
   if (ev.key === ' ') {
     if (!typing) { spaceDown = true; cv.classList.add('grab'); }
   }
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'k') {
+    ev.preventDefault();
+    setCmdk(document.getElementById('cmdk').hasAttribute('hidden'));
+    return;
+  }
   if (typing) {
     if (ev.key === 'Escape') ev.target.blur();
     return;
@@ -3993,9 +3998,10 @@ function exportJSON() {
   toast('Exported JSON');
 }
 
-function buildSVGString(bg, includeDims) {
+function buildSVGString(bg, includeDims, ents) {
   if (includeDims === undefined) includeDims = true;
-  const ex = extentsOf(state.doc.entities) || { x0: 0, y0: 0, x1: 100, y1: 100 };
+  if (!ents) ents = state.doc.entities;
+  const ex = extentsOf(ents) || { x0: 0, y0: 0, x1: 100, y1: 100 };
   const pad = Math.max(10, Math.max(ex.x1 - ex.x0, ex.y1 - ex.y0) * 0.04);
   const w = (ex.x1 - ex.x0) + pad * 2, h = (ex.y1 - ex.y0) + pad * 2;
   const X = (x) => +(x - ex.x0 + pad).toFixed(3);
@@ -4005,7 +4011,7 @@ function buildSVGString(bg, includeDims) {
   out.push('<svg xmlns="http://www.w3.org/2000/svg" width="' + w.toFixed(2) + '" height="' + h.toFixed(2) +
            '" viewBox="0 0 ' + w.toFixed(2) + ' ' + h.toFixed(2) + '">');
   out.push('<rect width="100%" height="100%" fill="' + bg + '"/>');
-  for (const e of state.doc.entities) {
+  for (const e of ents) {
     const L = layerOf(e.layer);
     if (!L || !L.visible) continue;
     const col = L.color, lw = (L.lineweight || 1);
@@ -4050,10 +4056,33 @@ function buildSVGString(bg, includeDims) {
   return { svg: out.join('\n'), w: w, h: h, ex: ex };
 }
 
+/* Selection export: the currently selected entities, or null when nothing
+   (usable) is selected. Shared by all exporters. */
+function selectionExportSet() {
+  if (!state.sel || !state.sel.size) return null;
+  const picked = state.doc.entities.filter(e => state.sel.has(e.id));
+  return picked.length ? picked : null;
+}
+
+/* Preflight review for a partial export. Returns true when the user chooses
+   to export ONLY the selected objects. */
+function selectionPreflight(kind, picked) {
+  const total = state.doc.entities.length;
+  const layers = Array.from(new Set(picked.map(e => e.layer || '0'))).sort();
+  const ex = extentsOf(picked);
+  return window.confirm('Selection export (' + kind + ')\n\n' +
+    picked.length + ' of ' + total + ' drawing objects are selected, on layer(s): ' + layers.join(', ') + '.\n' +
+    (ex ? 'Selected extent: ' + (ex.x1 - ex.x0).toFixed(2) + ' x ' + (ex.y1 - ex.y0).toFixed(2) + ' drawing units.' : '') + '\n\n' +
+    'OK = export ONLY the selected objects.\nCancel = export the whole drawing.');
+}
+
 function exportSVG() {
-  const r = buildSVGString('#0b1017');
+  const picked = selectionExportSet();
+  const onlySel = !!picked && selectionPreflight('SVG', picked);
+  const ents = onlySel ? picked : state.doc.entities;
+  const r = buildSVGString('#0b1017', undefined, ents);
   const dimChoice = window.confirm('SVG export options\n\nInclude dimensions as geometry + text in the file?\n\nOK = include dimensions, Cancel = export without dimensions.');
-  const rr = buildSVGString('#0b1017', dimChoice);
+  const rr = buildSVGString('#0b1017', dimChoice, ents);
   const unitMm = (state.doc && UNIT_MM[state.doc.units]) || 0;
   let svg = rr.svg, note = 'unitless (coordinates as-is)';
   if (unitMm) {
@@ -4066,9 +4095,10 @@ function exportSVG() {
   const okExport = window.confirm('SVG export review\n\nDrawing units: ' + note + '.\nDimensions: ' +
     (dimChoice ? 'included' : 'excluded') + '.\n\nExport this SVG?');
   if (!okExport) { toast('SVG export cancelled'); return; }
-  download(slug() + '.svg', svg, 'image/svg+xml');
+  download(slug() + (onlySel ? '-selection' : '') + '.svg', svg, 'image/svg+xml');
   toast('Exported SVG (' + (unitMm ? unitLabelOf(state.doc.units) : 'unitless') +
-    ', dimensions ' + (dimChoice ? 'included' : 'excluded') + ')');
+    ', dimensions ' + (dimChoice ? 'included' : 'excluded') +
+    (onlySel ? ', selection only — ' + picked.length + ' object(s)' : '') + ')');
 }
 
 function dxfLine(a, b, layer) {
@@ -4077,8 +4107,9 @@ function dxfLine(a, b, layer) {
 }
 
 const DXF_INSUNITS = { mm: 4, in: 1, ft: 2 };
-function buildDXFExportPlan(units, includeDims) {
+function buildDXFExportPlan(units, includeDims, ents) {
   if (includeDims === undefined) includeDims = true;
+  if (!ents) ents = state.doc.entities;
   const insunits = DXF_INSUNITS[units] || 0;
   let dimCount = 0;
   const unitLabel = insunits === 4 ? 'mm' : (insunits === 1 ? 'in' : (insunits === 2 ? 'ft' : 'unitless'));
@@ -4092,7 +4123,7 @@ function buildDXFExportPlan(units, includeDims) {
   for (const l of Ls) out.push(['0', 'LAYER', '2', l.name, '70', '0', '62', '7', '6', 'CONTINUOUS'].join('\n'));
   out.push(['0', 'ENDTAB', '0', 'ENDSEC'].join('\n'));
   out.push(['0', 'SECTION', '2', 'ENTITIES'].join('\n'));
-  for (const e of state.doc.entities) {
+  for (const e of ents) {
     const ly = e.layer || '0';
     if (e.type === 'dim') {
       dimCount++;
@@ -4142,6 +4173,7 @@ function buildDXFExportPlan(units, includeDims) {
     exportedCount ? 'Included DXF entities (' + exportedCount + '): ' + counts(exported) : 'Included DXF entities: none',
     omittedCount ? 'Omitted drawing objects (' + omittedCount + '): ' + counts(omitted) : 'Omitted drawing objects: none',
     underlayNote,
+    ents !== state.doc.entities ? 'Scope: selection only — ' + ents.length + ' of ' + state.doc.entities.length + ' drawing objects.' : null,
   ].filter(Boolean).join('\n');
   return { content: out.join('\n') + '\n', summary, exported, omitted, units: unitLabel };
 }
@@ -4158,17 +4190,24 @@ function exportDXF() {
     toast('DXF export cancelled - choose mm, in, ft or none');
     return;
   }
-  const dimChoice = window.confirm('DXF export review\n\n' + buildDXFExportPlan(canon, true).summary +
+  const picked = selectionExportSet();
+  const onlySel = !!picked && selectionPreflight('DXF', picked);
+  const ents = onlySel ? picked : state.doc.entities;
+  const dimChoice = window.confirm('DXF export review\n\n' + buildDXFExportPlan(canon, true, ents).summary +
     '\n\nInclude dimensions as geometry + text in the file?\n\nOK = include dimensions, Cancel = export without dimensions.');
-  const plan = buildDXFExportPlan(canon, dimChoice);
+  const plan = buildDXFExportPlan(canon, dimChoice, ents);
   if (!window.confirm('DXF export review\n\n' + plan.summary + '\n\nExport this file?')) return;
-  download(slug() + '.dxf', plan.content, 'application/dxf');
+  download(slug() + (onlySel ? '-selection' : '') + '.dxf', plan.content, 'application/dxf');
   toast('Exported DXF (ASCII, ' + plan.units + ')' +
+    (onlySel ? ', selection only — ' + picked.length + ' object(s)' : '') +
     (Object.values(plan.omitted).reduce((a, b) => a + b, 0) ? ' — see export review for omissions' : ''));
 }
 
 function exportPNG() {
-  const ex = extentsOf(state.doc.entities) || { x0: 0, y0: 0, x1: 100, y1: 100 };
+  const picked = selectionExportSet();
+  const onlySel = !!picked && selectionPreflight('PNG', picked);
+  const ents = onlySel ? picked : state.doc.entities;
+  const ex = extentsOf(ents) || { x0: 0, y0: 0, x1: 100, y1: 100 };
   const pad = Math.max(12, Math.max(ex.x1 - ex.x0, ex.y1 - ex.y0) * 0.05);
   const wWorld = (ex.x1 - ex.x0) + pad * 2, hWorld = (ex.y1 - ex.y0) + pad * 2;
   const unitMm = (state.doc && UNIT_MM[state.doc.units]) || 0;
@@ -4205,7 +4244,7 @@ function exportPNG() {
   const ox = ex.x0 - pad, oy = ex.y1 + pad;
   const map = (p) => [(p[0] - ox) * scale, (oy - p[1]) * scale];
   g.lineCap = 'round'; g.lineJoin = 'round';
-  for (const e of state.doc.entities) {
+  for (const e of ents) {
     const L = layerOf(e.layer);
     if (!L || !L.visible) continue;
     g.strokeStyle = L.color; g.fillStyle = L.color;
@@ -4249,8 +4288,9 @@ function exportPNG() {
   }
   c2.toBlob((blob) => {
     if (!blob) { toast('PNG export failed'); return; }
-    download(slug() + '.png', blob, 'image/png');
-    toast('Exported PNG ' + W + 'x' + H + ' px at ' + dpi + ' DPI' + (unitMm ? ' (1:1 print scale)' : ''));
+    download(slug() + (onlySel ? '-selection' : '') + '.png', blob, 'image/png');
+    toast('Exported PNG ' + W + 'x' + H + ' px at ' + dpi + ' DPI' + (unitMm ? ' (1:1 print scale)' : '') +
+      (onlySel ? ' — selection only, ' + picked.length + ' object(s)' : ''));
   }, 'image/png');
 }
 
@@ -5183,6 +5223,134 @@ function loadSampleExample() {
   setPrompt('Read-only example — click "Start from this plan" to edit a copy of it.');
 }
 
+/* ---------- command palette (Ctrl+K, round 7) ---------- */
+const CMDK_ITEMS = [
+  { label: 'Select / move', hint: 'Click objects; drag to move', key: 'V', run: () => setTool('select') },
+  { label: 'Line', hint: 'Two points', key: 'L', run: () => setTool('line') },
+  { label: 'Polyline', hint: 'Chain of segments', key: 'P', run: () => setTool('polyline') },
+  { label: 'Vertex edit', hint: 'Reshape a polyline', key: 'Q', run: () => setTool('vertex') },
+  { label: 'Rectangle', hint: 'Two corners', key: 'R', run: () => setTool('rect') },
+  { label: 'Circle', hint: 'Centre + radius', key: 'C', run: () => setTool('circle') },
+  { label: 'Arc', hint: 'Three points', key: 'A', run: () => setTool('arc') },
+  { label: 'Text', hint: 'Place a note', key: 'T', run: () => setTool('text') },
+  { label: 'Dimension', hint: 'Linear dimension', key: 'D', run: () => setTool('dim') },
+  { label: 'Measure', hint: 'Distance between two points', key: 'U', run: () => setTool('measure') },
+  { label: 'Offset', hint: 'Parallel copy of an object', run: () => setTool('offset') },
+  { label: 'Move selection', hint: 'MOVE — or type MOVE @dx,dy', key: 'M', run: () => execCommand('MOVE') },
+  { label: 'Copy selection', hint: 'COPY — or type COPY @dx,dy', run: () => execCommand('COPY') },
+  { label: 'Rotate', hint: 'Rotate selection', key: 'O', run: () => setTool('rotate') },
+  { label: 'Fillet / chamfer', hint: 'Round or bevel a corner (Shift = chamfer)', run: () => setTool('fillet') },
+  { label: 'Trim', hint: 'Cut objects at an edge', run: () => setTool('trim') },
+  { label: 'Extend', hint: 'Stretch a line to a boundary', run: () => setTool('extend') },
+  { label: 'Break', hint: 'Split an object in two', key: 'B', run: () => setTool('break') },
+  { label: 'Erase selection', hint: 'Delete selected objects', key: 'Del', run: () => deleteSelection() },
+  { label: 'Mirror X', hint: 'Flip selection across X', key: 'Shift+X', run: () => mirrorSelection('x', true) },
+  { label: 'Mirror Y', hint: 'Flip selection across Y', key: 'Shift+Y', run: () => mirrorSelection('y', true) },
+  { label: 'Rectangular array', hint: 'Grid of copies', key: 'Shift+A', run: () => arraySelection() },
+  { label: 'Polar array', hint: 'Copies around a centre', key: 'Shift+P', run: () => polarArrayDialog() },
+  { label: 'Fit view', hint: 'Zoom to content', key: 'F', run: () => fitView() },
+  { label: 'Undo', hint: 'Last change', key: 'Ctrl+Z', run: () => undo() },
+  { label: 'Redo', hint: 'Re-apply', key: 'Ctrl+Y', run: () => redo() },
+  { label: 'Save', hint: 'Save the drawing', key: 'Ctrl+S', run: () => saveDrawing() },
+  { label: 'New drawing', hint: 'Start a blank plan', run: () => newDrawing() },
+  { label: 'Export PNG', hint: 'Image of the plan', run: () => exportPNG() },
+  { label: 'Export DXF', hint: 'CAD exchange file', run: () => exportDXF() },
+  { label: 'Export SVG', hint: 'Vector file', run: () => exportSVG() },
+  { label: 'Export JSON', hint: 'Portable plan file', run: () => exportJSON() },
+  { label: 'Print sheet', hint: 'Scale-to-paper print', run: () => printSheetDialog() },
+  { label: 'Share link', hint: 'Read-only link to this plan', run: () => shareDrawing() },
+  { label: 'Command guide', hint: 'All shortcuts and commands', key: '?', run: () => setCommandGuide(true) }
+];
+
+const cmdkEl = document.getElementById('cmdk');
+const cmdkOverlay = document.getElementById('cmdkOverlay');
+const cmdkInput = document.getElementById('cmdkInput');
+const cmdkList = document.getElementById('cmdkList');
+let cmdkMatches = [];
+let cmdkSel = 0;
+let cmdkReturnFocus = null;
+
+function cmdkFilter(q) {
+  const s = (q || '').trim().toLowerCase();
+  if (!s) return CMDK_ITEMS;
+  return CMDK_ITEMS.filter(it =>
+    it.label.toLowerCase().includes(s) || (it.hint || '').toLowerCase().includes(s));
+}
+
+function cmdkRender() {
+  cmdkList.innerHTML = '';
+  if (!cmdkMatches.length) {
+    const empty = document.createElement('div');
+    empty.className = 'cmdk-empty';
+    empty.textContent = 'No matching command — press Enter to try it as a coordinate or typed command.';
+    cmdkList.appendChild(empty);
+    return;
+  }
+  cmdkMatches.forEach((it, i) => {
+    const div = document.createElement('div');
+    div.className = 'cmdk-item';
+    div.setAttribute('role', 'option');
+    div.setAttribute('aria-selected', String(i === cmdkSel));
+    if (i === cmdkSel) div.setAttribute('id', 'cmdkActive');
+    const label = document.createElement('div');
+    label.className = 'cmdk-label';
+    const b = document.createElement('b'); b.textContent = it.label;
+    const small = document.createElement('small'); small.textContent = it.hint || '';
+    label.appendChild(b); label.appendChild(small);
+    div.appendChild(label);
+    if (it.key) { const kbd = document.createElement('kbd'); kbd.textContent = it.key; div.appendChild(kbd); }
+    div.addEventListener('mousedown', (ev) => { ev.preventDefault(); cmdkSel = i; cmdkRun(); });
+    div.addEventListener('mousemove', () => { if (cmdkSel !== i) { cmdkSel = i; cmdkRender(); } });
+    cmdkList.appendChild(div);
+  });
+  const active = cmdkList.querySelector('#cmdkActive');
+  if (active) active.scrollIntoView({ block: 'nearest' });
+}
+
+function cmdkRun() {
+  const it = cmdkMatches[cmdkSel];
+  if (!it) return;
+  setCmdk(false);
+  try { it.run(); } catch (err) { setPrompt('Command failed: ' + err.message); }
+}
+
+function setCmdk(open) {
+  if (open && state.readOnly) { exampleNotice(); return; }
+  cmdkEl.hidden = !open;
+  cmdkOverlay.hidden = !open;
+  if (open) {
+    cmdkReturnFocus = document.activeElement;
+    cmdkInput.value = '';
+    cmdkMatches = CMDK_ITEMS;
+    cmdkSel = 0;
+    cmdkRender();
+    cmdkInput.focus();
+  } else if (cmdkReturnFocus && cmdkReturnFocus.focus) {
+    try { cmdkReturnFocus.focus(); } catch (e) {}
+    cmdkReturnFocus = null;
+  }
+}
+
+cmdkInput.addEventListener('input', () => {
+  cmdkMatches = cmdkFilter(cmdkInput.value);
+  cmdkSel = 0;
+  cmdkRender();
+});
+cmdkInput.addEventListener('keydown', (ev) => {
+  if (ev.key === 'ArrowDown') { ev.preventDefault(); if (cmdkMatches.length) { cmdkSel = (cmdkSel + 1) % cmdkMatches.length; cmdkRender(); } }
+  else if (ev.key === 'ArrowUp') { ev.preventDefault(); if (cmdkMatches.length) { cmdkSel = (cmdkSel - 1 + cmdkMatches.length) % cmdkMatches.length; cmdkRender(); } }
+  else if (ev.key === 'Enter') {
+    ev.preventDefault();
+    const q = cmdkInput.value.trim();
+    if (cmdkMatches.length) { cmdkRun(); return; }
+    // Nothing matched: hand the text to the typed command bar (coordinates, LINE, MOVE @dx,dy, …)
+    setCmdk(false);
+    if (q) { cmdInput.value = q; cmdInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: false })); }
+  }
+  else if (ev.key === 'Escape') { ev.preventDefault(); setCmdk(false); }
+});
+cmdkOverlay.addEventListener('mousedown', () => setCmdk(false));
+
 window.addEventListener('load', () => { boot(); });
 
 // Debug/test hook: read-only access to view transform + selection internals.
@@ -5191,7 +5359,7 @@ window.__ak = {
   filletGeom, applyFillet, defaultFilletRadius,
   trimGeom, applyTrim, extendGeom, applyExtend, entSegsFlat, rayEntIsects, rectCornersOf,
   parseCoordEntry,
-  healthReport, openHealth,
+  healthReport, openHealth, selectionExportSet, selectionPreflight,
   readUnderlayFile, setUnderlay, clearUnderlay, calibrateUnderlay, startUnderlayCalibrate,
   placeUnderlay, underlayBBox, underlayCorners, triggerUnderlayFile, submitCalibrateModal,
   openCalibrateModal, renderUnderlayPanel, buildSVGString, buildDXFExportPlan, loadDoc, docPayload,

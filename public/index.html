@@ -305,6 +305,7 @@
       </div>
       <div class="guide-row" data-guide-item data-search="escape cancel finish command"><span><b>Cancel / finish</b><small>Escape cancels; Enter finishes a polyline or current step</small></span><kbd>Esc · ↵</kbd></div>
       <div class="guide-row" data-guide-item data-search="delete backspace erase vertex"><span><b>Delete</b><small>Delete selection, or active vertex in Vertex mode</small></span><kbd>Del</kbd></div>
+    <div class="guide-row" data-guide-item data-search="palette ctrl+k command search cmdk finder"><span><b>Command palette</b><small>Search every tool and command; type coordinates to place a point</small></span><kbd>Ctrl+K</kbd></div>
     </section>
     <p class="guide-empty" id="guideEmpty" hidden>No matches. Try a tool name or key.</p>
   </div>
@@ -340,6 +341,13 @@
     </div>
     <div id="historyList" class="drawing-list" style="max-height:320px;overflow:auto">Loading…</div>
   </div>
+</div>
+<!-- Command palette (Ctrl+K) -->
+<div class="cmdk-overlay" id="cmdkOverlay" hidden></div>
+<div class="cmdk" id="cmdk" role="dialog" aria-modal="true" aria-label="Command palette" hidden>
+  <input id="cmdkInput" class="cmdk-input" placeholder="Type a command, tool, or x,y coordinate…" autocomplete="off" spellcheck="false" aria-label="Search commands">
+  <div id="cmdkList" class="cmdk-list" role="listbox" aria-label="Matching commands"></div>
+  <div class="cmdk-foot">&#8593;&#8595; move · Enter run · Esc close</div>
 </div>
 
 </body>
