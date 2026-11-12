@@ -106,7 +106,10 @@ function dimGeom(e) {
   const o = e.offset || 0;
   const a = add(e.p1, mul(n, o));
   const b = add(e.p2, mul(n, o));
-  return { a, b, n, txt: e.text || fmt(L),
+  // Shared pages are read-only, so the dimension text carries the document's
+  // real-world unit: a 720 mm wall must never read as a bare "720".
+  const uLabel = doc && doc.units && doc.units !== 'none' ? ' ' + doc.units : '';
+  return { a, b, n, txt: e.text || (fmt(L) + uLabel),
            lines: [[e.p1, add(e.p1, mul(n, o * 1.14))],
                    [e.p2, add(e.p2, mul(n, o * 1.14))], [a, b]] };
 }
@@ -310,6 +313,11 @@ if (!m) {
                   'It may have been revoked by the owner.');
         return;
       }
+      if (res.status === 410) {
+        showError('⌛', 'This share link has expired',
+                  'Ask the owner to create a new link.');
+        return;
+      }
       if (!res.ok) {
         showError('⚠️', 'Could not load this drawing (HTTP ' + res.status + ')',
                   'Try again later.');
@@ -330,7 +338,8 @@ if (!m) {
       document.getElementById('name').textContent = d.name || 'Untitled';
       document.getElementById('when').textContent =
         d.updated_at ? 'updated ' + new Date(d.updated_at).toLocaleString() : '';
-      document.getElementById('count').textContent = doc.entities.length + ' entities';
+      document.getElementById('count').textContent = doc.entities.length + ' entities' +
+        (doc.units && doc.units !== 'none' ? ' · ' + doc.units : '');
       document.getElementById('msg').style.display = 'none';
       resize();
       fitView();

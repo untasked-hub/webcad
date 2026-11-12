@@ -76,9 +76,11 @@ async function init() {
       drawing_id TEXT NOT NULL REFERENCES drawings(id) ON DELETE CASCADE,
       rev INTEGER NOT NULL,
       data JSONB NOT NULL,
+      label TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
+  await db.query('ALTER TABLE drawing_versions ADD COLUMN IF NOT EXISTS label TEXT');
   await db.query(`
     CREATE TABLE IF NOT EXISTS users (
       username TEXT PRIMARY KEY,
@@ -94,6 +96,7 @@ async function init() {
   `);
   await db.query('ALTER TABLE drawings ADD COLUMN IF NOT EXISTS owner TEXT');
   await db.query('ALTER TABLE drawings ADD COLUMN IF NOT EXISTS share_token TEXT');
+  await db.query('ALTER TABLE drawings ADD COLUMN IF NOT EXISTS share_expires_at TIMESTAMPTZ');
   await db.query('CREATE UNIQUE INDEX IF NOT EXISTS drawings_share_token_idx ON drawings (share_token) WHERE share_token IS NOT NULL');
   const { rows } = await db.query('SELECT count(*)::int AS n FROM drawings');
   if (rows[0].n === 0) await seed(db);
@@ -216,11 +219,16 @@ app.get('/api/drawings', async (req, res) => {
     const { rows } = await pool.query(
       req.user
         ? `SELECT id, name, owner, rev, created_at, updated_at,
+                  (owner IS NOT NULL AND owner = $1 AND share_token IS NOT NULL AND
+                    (share_expires_at IS NULL OR share_expires_at > now())) AS is_shared,
+                  (owner IS NOT NULL AND owner = $1 AND share_token IS NOT NULL) AS has_share_link,
+                  share_expires_at,
                   jsonb_array_length(COALESCE(data->'entities', '[]'::jsonb)) AS entity_count
              FROM drawings
             WHERE owner IS NULL OR owner = $1
             ORDER BY updated_at DESC LIMIT 100`
         : `SELECT id, name, owner, rev, created_at, updated_at,
+                  FALSE AS is_shared, FALSE AS has_share_link, NULL AS share_expires_at,
                   jsonb_array_length(COALESCE(data->'entities', '[]'::jsonb)) AS entity_count
              FROM drawings
             WHERE owner IS NULL
@@ -251,8 +259,13 @@ app.post('/api/drawings', requireAuth, async (req, res) => {
 app.get('/api/drawings/:id', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'SELECT id, name, data, rev, created_at, updated_at, owner FROM drawings WHERE id = $1',
-      [req.params.id]
+      `SELECT id, name, data, rev, created_at, updated_at, owner,
+              (owner IS NOT NULL AND owner = $2 AND share_token IS NOT NULL AND
+               (share_expires_at IS NULL OR share_expires_at > now())) AS is_shared,
+              (owner IS NOT NULL AND owner = $2 AND share_token IS NOT NULL) AS has_share_link,
+              share_expires_at
+         FROM drawings WHERE id = $1`,
+      [req.params.id, req.user || null]
     );
     if (!rows.length) return res.status(404).json({ error: 'not found' });
     if (rows[0].owner && rows[0].owner !== req.user) {
@@ -290,6 +303,86 @@ app.put('/api/drawings/:id', async (req, res) => {
     }
     res.json({ drawing: rows[0] });
   } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+// ---- Owner-only version history: list, checkpoint, restore -------------------
+async function ownedDrawingOr(req, res) {
+  if (!req.user) { res.status(401).json({ error: 'Sign in to manage version history' }); return null; }
+  const { rows } = await pool.query('SELECT id, owner FROM drawings WHERE id = $1', [req.params.id]);
+  if (!rows.length) { res.status(404).json({ error: 'not found' }); return null; }
+  if (rows[0].owner !== req.user) { res.status(403).json({ error: 'Only the owner can manage version history' }); return null; }
+  return rows[0];
+}
+
+function entityCountOf(doc) {
+  return doc && Array.isArray(doc.entities) ? doc.entities.length : 0;
+}
+
+app.get('/api/drawings/:id/versions', async (req, res) => {
+  try {
+    if (!(await ownedDrawingOr(req, res))) return;
+    const { rows } = await pool.query(
+      `SELECT id, rev, label, created_at, jsonb_array_length(COALESCE(data->'entities', '[]'::jsonb)) AS entity_count
+         FROM drawing_versions WHERE drawing_id = $1 ORDER BY id DESC LIMIT 50`,
+      [req.params.id]
+    );
+    res.json({ versions: rows });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+app.post('/api/drawings/:id/versions', async (req, res) => {
+  try {
+    if (!(await ownedDrawingOr(req, res))) return;
+    const label = String((req.body && req.body.label) || 'Checkpoint').slice(0, 80);
+    const { rows } = await pool.query(
+      `INSERT INTO drawing_versions (drawing_id, rev, data, label)
+       SELECT id, rev, data, $2 FROM drawings WHERE id = $1
+       RETURNING id, rev, label, created_at`,
+      [req.params.id, label]
+    );
+    res.status(201).json({ version: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+app.post('/api/drawings/:id/versions/:versionId/restore', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    if (!(await ownedDrawingOr(req, res))) { client.release(); return; }
+    const versionId = Number(req.params.versionId);
+    if (!Number.isInteger(versionId)) { client.release(); return res.status(400).json({ error: 'invalid version id' }); }
+    await client.query('BEGIN');
+    const { rows: lock } = await client.query('SELECT id, data, rev FROM drawings WHERE id = $1 FOR UPDATE', [req.params.id]);
+    const { rows: ver } = await client.query(
+      'SELECT id, rev, data FROM drawing_versions WHERE id = $1 AND drawing_id = $2',
+      [versionId, req.params.id]
+    );
+    if (!lock.length || !ver.length) {
+      await client.query('ROLLBACK');
+      client.release();
+      return res.status(404).json({ error: 'version not found' });
+    }
+    // Keep the pre-restore state so the restore itself is recoverable.
+    await client.query(
+      'INSERT INTO drawing_versions (drawing_id, rev, data, label) VALUES ($1, $2, $3, $4)',
+      [req.params.id, lock[0].rev, JSON.stringify(lock[0].data), 'Before restore to rev ' + ver[0].rev]
+    );
+    const { rows } = await client.query(
+      `UPDATE drawings SET data = $2, rev = rev + 1, updated_at = now()
+        WHERE id = $1 RETURNING id, name, rev, updated_at`,
+      [req.params.id, JSON.stringify(ver[0].data)]
+    );
+    await client.query('COMMIT');
+    client.release();
+    res.json({ drawing: rows[0], data: ver[0].data, restored_from_rev: ver[0].rev, entity_count: entityCountOf(ver[0].data) });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    client.release();
     res.status(500).json({ error: String(err.message || err) });
   }
 });
@@ -364,12 +457,31 @@ app.post('/api/drawings/:id/share', requireAuth, async (req, res) => {
     if (found[0].owner !== req.user) {
       return res.status(403).json({ error: 'Only the owner can share this drawing' });
     }
-    let token = found[0].share_token;
-    if (!token) {
-      token = crypto.randomBytes(16).toString('hex');
-      await pool.query('UPDATE drawings SET share_token = $2 WHERE id = $1', [req.params.id, token]);
+    // Omitted/null/empty ttl means "keep it until revoked" (no expiry).
+    const rawTtl = req.body ? req.body.ttl : undefined;
+    const ttl = rawTtl === undefined || rawTtl === null || rawTtl === '' ? 'never' : rawTtl;
+    const allowed = { '24h': 24, '7d': 168, '30d': 720, never: null };
+    let hours;
+    if (req.body && req.body.ttl_hours !== undefined) {
+      hours = Number(req.body.ttl_hours);
+      if (!Number.isFinite(hours) || hours <= 0 || hours > 8760) {
+        return res.status(400).json({ error: 'ttl_hours must be greater than 0 and no more than 8760' });
+      }
+    } else {
+      if (!Object.prototype.hasOwnProperty.call(allowed, ttl)) {
+        return res.status(400).json({ error: 'ttl must be 24h, 7d, 30d, or never' });
+      }
+      hours = allowed[ttl];
     }
-    res.json({ share_token: token, share_path: '/s/' + token });
+    const token = found[0].share_token || crypto.randomBytes(16).toString('hex');
+    const { rows } = await pool.query(
+      `UPDATE drawings SET share_token = $2,
+         share_expires_at = CASE WHEN $3::double precision IS NULL THEN NULL
+           ELSE now() + ($3::double precision * interval '1 hour') END
+       WHERE id = $1 RETURNING share_expires_at`,
+      [req.params.id, token, hours]
+    );
+    res.json({ share_token: token, share_path: '/s/' + token, share_expires_at: rows[0].share_expires_at });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -382,7 +494,7 @@ app.delete('/api/drawings/:id/share', requireAuth, async (req, res) => {
     if (found[0].owner !== req.user) {
       return res.status(403).json({ error: 'Only the owner can revoke this share link' });
     }
-    await pool.query('UPDATE drawings SET share_token = NULL WHERE id = $1', [req.params.id]);
+    await pool.query('UPDATE drawings SET share_token = NULL, share_expires_at = NULL WHERE id = $1', [req.params.id]);
     res.json({ ok: true, share_token: null });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
@@ -395,12 +507,15 @@ app.get('/api/share/:token', async (req, res) => {
     const token = String(req.params.token || '');
     if (!/^[a-f0-9]{16,64}$/.test(token)) return res.status(404).json({ error: 'not found' });
     const { rows } = await pool.query(
-      'SELECT id, name, data, updated_at FROM drawings WHERE share_token = $1',
+      'SELECT id, name, data, updated_at, share_expires_at FROM drawings WHERE share_token = $1',
       [token]
     );
     if (!rows.length) return res.status(404).json({ error: 'This share link is no longer available' });
     const d = rows[0];
-    res.json({ drawing: { id: d.id, name: d.name, data: d.data, updated_at: d.updated_at }, readonly: true });
+    if (d.share_expires_at && new Date(d.share_expires_at).getTime() <= Date.now()) {
+      return res.status(410).json({ error: 'This share link has expired', expired: true });
+    }
+    res.json({ drawing: { id: d.id, name: d.name, data: d.data, updated_at: d.updated_at }, readonly: true, share_expires_at: d.share_expires_at });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }

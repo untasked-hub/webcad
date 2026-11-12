@@ -9,6 +9,7 @@ const wrap = document.getElementById('canvasWrap');
 const state = {
   doc: null,
   drawingId: null,
+  readOnly: false,
   tool: 'select',
   view: { x: 360, y: 240, zoom: 1 },
   sel: new Set(),
@@ -53,6 +54,9 @@ function emptyDoc() {
     entities: [],
     currentLayer: 'Walls',
     underlay: null,
+    units: null,
+    drawingScale: null, // optional 1:n print-scale metadata
+    visibilityPresets: [],
   };
 }
 
@@ -73,6 +77,108 @@ function sampleDoc() {
   add({ type: 'dim', layer: 'Dims', p1: [0, 0], p2: [720, 0], offset: -70 });
   add({ type: 'dim', layer: 'Dims', p1: [720, 0], p2: [720, 480], offset: 70 });
   return doc;
+}
+
+/* ---------- reusable drawing starter templates (round 9) ----------
+   A starter is ordinary document data: real layers, real entities, real
+   dimensions. Nothing about it is special-cased in the renderer, so a user
+   can immediately edit, dimension, export, or share the result. Starting from
+   a blank drawing stays the default and is never taken away. */
+function starterDoc() {
+  const d = emptyDoc();
+  d.units = 'mm';
+  d.currentLayer = 'Walls';
+  return d;
+}
+
+function starterAdd(d, o) {
+  o.id = 'e' + (d.entities.length + 1);
+  d.entities.push(o);
+  return o;
+}
+
+// 4.2 x 3.6 m room: 100 mm walls, a door with a swing, a window, labels and
+// two overall dimensions — the shape of a first floor-plan sketch.
+function roomTemplate() {
+  const d = starterDoc();
+  const W = 4200, H = 3600, T = 100;
+  starterAdd(d, { type: 'rect', layer: 'Walls', p1: [0, 0], p2: [W, H] });
+  starterAdd(d, { type: 'rect', layer: 'Walls', p1: [T, T], p2: [W - T, H - T] });
+  starterAdd(d, { type: 'line', layer: 'Walls', p1: [900, T], p2: [900, T + 900] });
+  starterAdd(d, { type: 'arc', layer: 'Walls', c: [900, T], r: 900, a0: 0, a1: 90 });
+  starterAdd(d, { type: 'line', layer: '0', p1: [W - T, 1200], p2: [W - T, 2400] });
+  starterAdd(d, { type: 'line', layer: '0', p1: [W, 1200], p2: [W, 2400] });
+  starterAdd(d, { type: 'text', layer: 'Text', p: [400, 3100], text: 'ROOM 4.2 x 3.6 m', size: 170 });
+  starterAdd(d, { type: 'text', layer: 'Text', p: [1150, 700], text: 'DOOR 900', size: 130 });
+  starterAdd(d, { type: 'dim', layer: 'Dims', p1: [0, H], p2: [W, H], offset: 320 });
+  starterAdd(d, { type: 'dim', layer: 'Dims', p1: [W, 0], p2: [W, H], offset: 320 });
+  d.visibilityPresets = [{ name: 'Clean walls', hidden: ['Dims', 'Text'] }];
+  return d;
+}
+
+// 3.0 x 2.0 m garden plot: boundary, two planting beds, a path, a tree and
+// overall dimensions.
+function gardenTemplate() {
+  const d = starterDoc();
+  const W = 3000, H = 2000;
+  starterAdd(d, { type: 'rect', layer: 'Walls', p1: [0, 0], p2: [W, H] });
+  starterAdd(d, { type: 'rect', layer: '0', p1: [300, 300], p2: [1300, 1700] });
+  starterAdd(d, { type: 'rect', layer: '0', p1: [1700, 300], p2: [2700, 1700] });
+  starterAdd(d, { type: 'line', layer: '0', p1: [1450, 0], p2: [1450, H] });
+  starterAdd(d, { type: 'circle', layer: '0', c: [900, 1000], r: 260 });
+  starterAdd(d, { type: 'text', layer: 'Text', p: [500, 950], text: 'BED A', size: 160 });
+  starterAdd(d, { type: 'text', layer: 'Text', p: [1900, 950], text: 'BED B', size: 160 });
+  starterAdd(d, { type: 'text', layer: 'Text', p: [60, 1760], text: 'PLOT 3.0 x 2.0 m', size: 140 });
+  starterAdd(d, { type: 'dim', layer: 'Dims', p1: [0, 0], p2: [W, 0], offset: -320 });
+  starterAdd(d, { type: 'dim', layer: 'Dims', p1: [W, 0], p2: [W, H], offset: 320 });
+  d.visibilityPresets = [{ name: 'Beds only', hidden: ['Dims', 'Text'] }];
+  return d;
+}
+
+// 1.8 x 0.6 m workshop bench: bench top, vice, lower shelf line, a wall
+// reference line, a label and two overall dimensions.
+function benchTemplate() {
+  const d = starterDoc();
+  const W = 1800, H = 600;
+  starterAdd(d, { type: 'rect', layer: 'Walls', p1: [0, 0], p2: [W, H] });
+  starterAdd(d, { type: 'line', layer: '0', p1: [0, 180], p2: [W, 180] });
+  starterAdd(d, { type: 'rect', layer: '0', p1: [1450, -240], p2: [1700, 0] });
+  starterAdd(d, { type: 'circle', layer: '0', c: [300, 380], r: 70 });
+  starterAdd(d, { type: 'text', layer: 'Text', p: [120, 300], text: 'BENCH 1.8 x 0.6 m', size: 130 });
+  starterAdd(d, { type: 'text', layer: 'Text', p: [1520, -320], text: 'VICE', size: 110 });
+  starterAdd(d, { type: 'dim', layer: 'Dims', p1: [0, 0], p2: [W, 0], offset: -480 });
+  starterAdd(d, { type: 'dim', layer: 'Dims', p1: [0, 0], p2: [0, H], offset: -320 });
+  d.visibilityPresets = [{ name: 'Bench only', hidden: ['Dims', 'Text'] }];
+  return d;
+}
+
+const STARTER_TEMPLATES = [
+  { id: 'room', name: 'Room layout', blurb: '4.2 x 3.6 m room with a door, a window and overall dims', build: roomTemplate },
+  { id: 'garden', name: 'Garden plot', blurb: '3.0 x 2.0 m plot with two beds, a path and a tree', build: gardenTemplate },
+  { id: 'bench', name: 'Workshop bench', blurb: '1.8 x 0.6 m bench with a vice, a shelf line and dims', build: benchTemplate },
+];
+
+function starterTemplate(id) {
+  for (const t of STARTER_TEMPLATES) if (t.id === id) return t;
+  return null;
+}
+
+// Open a starter as a new, editable drawing. Returns true when one opened.
+async function startFromTemplate(id, unitsOverride) {
+  const t = starterTemplate(id);
+  if (!t) return false;
+  if (!(await approveReplace('start from the "' + t.name + '" template'))) return false;
+  const u = unitsOverride || panelUnitsValue();
+  const doc = applyUnitConversion(t.build(), u);
+  loadDoc(doc, null, t.name);
+  history.replaceState(null, '', '/');
+  zoomExtents();
+  markDirty();
+  hideLaunchPanel(true);
+  setPrompt('Started from "' + t.name + '" (' + unitLabelOf(u) + ') — every object is editable');
+  toast('Started "' + t.name + '" — units: ' + unitLabelOf(u));
+  document.getElementById('cmdInput')?.focus();
+  return true;
 }
 
 /* ---------- math ---------- */
@@ -153,11 +259,18 @@ function dimGeom(e) {
   const o = e.offset || 0;
   const a = add(e.p1, mul(n, o));
   const b = add(e.p2, mul(n, o));
-  const txt = e.text || fmt(L);
+  const txt = e.text || formatDimension(L);
   const lines = [[e.p1, add(e.p1, mul(n, o * 1.14))], [e.p2, add(e.p2, mul(n, o * 1.14))], [a, b]];
   return { a, b, n, txt, lines, L };
 }
 function fmt(v) { return (Math.round(v * 100) / 100).toFixed(2).replace(/\.?0+$/, ''); }
+function formatDimension(v) {
+  const u = state.doc && state.doc.units;
+  // Feet are a coarse unit: three decimals of a foot is ~0.3 mm, which is
+  // enough precision for plans without a wall of digits.
+  const n = Number(v.toFixed(u === 'in' || u === 'ft' ? 3 : 2)).toString();
+  return n + (u === 'mm' || u === 'in' || u === 'ft' ? ' ' + u : '');
+}
 
 function hitEntity(e, p, tol) {
   switch (e.type) {
@@ -454,7 +567,8 @@ function snapPoint(world) {
 /* ---------- undo ---------- */
 function snapshot() {
   return JSON.stringify({ entities: state.doc.entities, layers: state.doc.layers,
-    currentLayer: state.doc.currentLayer, underlay: state.doc.underlay || null });
+    currentLayer: state.doc.currentLayer, underlay: state.doc.underlay || null,
+    visibilityPresets: state.doc.visibilityPresets || [] });
 }
 function pushUndo() {
   state.undo.push(snapshot());
@@ -467,6 +581,7 @@ function restore(json) {
   state.doc.layers = d.layers;
   state.doc.currentLayer = d.currentLayer;
   state.doc.underlay = d.underlay || null;
+  state.doc.visibilityPresets = sanitizePresets(d.visibilityPresets);
   if (state.doc.underlay) ensureUnderlayImage(state.doc.underlay);
   const ids = new Set(state.doc.entities.map(e => e.id));
   state.sel = new Set([...state.sel].filter(id => ids.has(id)));
@@ -847,6 +962,68 @@ function drawPreview() {
   ctx.restore();
 }
 
+/* ---------- scale bar: real-world size at a glance ---------- */
+/* Display-only overlay: reads view + doc.units, never touches the document.
+   Lives on the canvas so it also shows on shared read-only plan links. */
+const SB_STEPS = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000,
+  10000, 20000, 50000, 100000, 200000, 500000, 1000000, 2000000, 5000000];
+function sbUnitsLabel() {
+  const u = state.doc && state.doc.units;
+  return (u === 'in' || u === 'mm' || u === 'ft') ? u : '';
+}
+function sbNice(worldTarget) {
+  let pick = SB_STEPS[0];
+  for (const s of SB_STEPS) { if (s <= worldTarget) pick = s; else break; }
+  return pick;
+}
+function scaleBarModel() {
+  const u = sbUnitsLabel();
+  const zoom = (state.view && state.view.zoom) || 1;
+  const targetWorld = 96 / zoom;
+  let world = sbNice(targetWorld);
+  let label;
+  if (u === 'mm' && world >= 1000) label = fmt(world / 1000) + ' m';
+  else if (u === 'in' && world >= 12) label = fmt(world / 12) + ' ft';
+  else if (u === 'ft' && world >= 5280) label = fmt(world / 5280) + ' mi';
+  else if (u === 'in') label = fmt(world) + ' in';
+  else if (u === 'ft') label = fmt(world) + ' ft';
+  else if (u === 'mm') label = fmt(world) + ' mm';
+  else label = fmt(world) + (u ? ' ' + u : ' units');
+  return { world, px: world * zoom, label, units: u || 'unitless', zoom };
+}
+function drawScaleBar() {
+  if (!state.doc) return;
+  const m = scaleBarModel();
+  if (!isFinite(m.px) || m.px < 12) return;
+  const w = Math.round(m.px);
+  const h = 5;
+  const x = Math.round((cvW() - w) / 2);
+  const y = Math.round(cvH() - 26);
+  ctx.save();
+  ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+  const tw = ctx.measureText(m.label).width;
+  ctx.fillStyle = 'rgba(13,20,29,.82)';
+  ctx.strokeStyle = 'rgba(127,209,255,.35)';
+  ctx.lineWidth = 1;
+  const padX = 8, boxW = Math.max(w, tw) + padX * 2, boxH = h + 24;
+  const boxX = Math.round((cvW() - boxW) / 2), boxY = y - 18;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(boxX, boxY, boxW, boxH, 6);
+  else ctx.rect(boxX, boxY, boxW, boxH);
+  ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = '#7fd1ff';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x, y + h); ctx.lineTo(x, y); ctx.lineTo(x + w, y);
+  ctx.lineTo(x + w, y + h);
+  ctx.stroke();
+  ctx.fillStyle = '#d9dee7';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(m.label, x + w / 2, y - 4);
+  ctx.restore();
+}
+
 function draw() {
   ctx.clearRect(0, 0, cvW(), cvH());
   ctx.fillStyle = '#0b1017';
@@ -876,6 +1053,7 @@ function draw() {
     ctx.restore();
   }
   drawSnapMarker();
+  drawScaleBar();
 }
 
 function renderAll() {
@@ -886,6 +1064,8 @@ function renderAll() {
   renderSelInfo();
   const n = state.doc ? state.doc.entities.length : 0;
   document.getElementById('countInfo').textContent = n + ' entities';
+  const hun = document.getElementById('hun');
+  if (hun) hun.textContent = sbUnitsLabel() || 'units';
 }
 
 /* ---------- side panels ---------- */
@@ -1017,7 +1197,15 @@ function renderLayers() {
     eye.className = 'ic' + (L.visible ? '' : ' off');
     eye.textContent = L.visible ? '◉' : '◌';
     eye.title = 'Toggle visibility';
-    eye.onclick = (ev) => { ev.stopPropagation(); L.visible = !L.visible; renderAll(); markDirty(); };
+    eye.onclick = (ev) => {
+      ev.stopPropagation();
+      // Layer visibility is a view state, so it stays usable on a read-only
+      // share link: no dirty flag, no autosave, no read-only warning.
+      L.visible = !L.visible;
+      renderAll();
+      if (state.readOnly) setPrompt(L.name + (L.visible ? ' visible' : ' hidden') + ' (review only)');
+      else markDirty();
+    };
     const lock = document.createElement('span');
     lock.className = 'ic' + (L.locked ? '' : ' off');
     lock.textContent = L.locked ? '🔒' : '🔓';
@@ -1038,6 +1226,174 @@ function renderLayers() {
     row.oncontextmenu = (ev) => { ev.preventDefault(); ev.stopPropagation(); openLayerMenu(ev, L); };
     box.appendChild(row);
   }
+  renderPresets();
+}
+
+/* ---------- layer visibility presets (round 7) ---------- */
+// A preset is a named snapshot of *which layers are hidden*, persisted inside
+// the drawing JSON so a shared plan keeps its presentation views. Storing the
+// hidden set (rather than the visible set) means a layer added later stays
+// visible instead of silently disappearing behind an old preset.
+function sanitizePresets(raw) {
+  if (!Array.isArray(raw)) return [];
+  const names = new Set(state.doc.layers.map(l => l.name));
+  const out = [];
+  const seen = new Set();
+  for (const p of raw) {
+    if (!p || typeof p.name !== 'string') continue;
+    const name = p.name.trim().slice(0, 40);
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    const hidden = Array.isArray(p.hidden)
+      ? Array.from(new Set(p.hidden.filter(n => typeof n === 'string' && names.has(n))))
+      : [];
+    out.push({ name, hidden });
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+
+function presets() {
+  if (!Array.isArray(state.doc.visibilityPresets)) state.doc.visibilityPresets = [];
+  return state.doc.visibilityPresets;
+}
+
+function currentHiddenNames() {
+  return state.doc.layers.filter(l => !l.visible).map(l => l.name);
+}
+
+function presetMatches(p) {
+  if (!p) return false;
+  const now = currentHiddenNames().sort().join('\u0000');
+  const want = p.hidden.slice().sort().join('\u0000');
+  return now === want;
+}
+
+function saveVisibilityPreset() {
+  if (state.readOnly) { exampleNotice(); return; }
+  const list = presets();
+  if (list.length >= 12) { toast('Preset limit reached (12)'); return; }
+  const suggested = 'View ' + (list.length + 1);
+  const input = prompt('Save current layer visibility as a view named:', suggested);
+  if (input == null) return;
+  const name = String(input).trim().slice(0, 40);
+  if (!name) return;
+  const existing = list.findIndex(p => p.name.toLowerCase() === name.toLowerCase());
+  pushUndo();
+  const entry = { name, hidden: currentHiddenNames() };
+  if (existing >= 0) {
+    list[existing] = entry;      // overwrite an existing view with the same name
+  } else {
+    list.push(entry);
+  }
+  state.dirty = true; markDirty();
+  renderAll();
+  setPrompt('Saved view “' + name + '” (' + entry.hidden.length + ' layer' + (entry.hidden.length === 1 ? '' : 's') + ' hidden)');
+}
+
+function applyVisibilityPreset(index) {
+  const list = presets();
+  const p = list[index];
+  if (!p) return;
+  // Applying a saved view is a *view* action, not a document edit. On a
+  // read-only share link or example preview it must switch the visible layers
+  // without pushing undo, marking the drawing dirty, or raising the read-only
+  // warning — the whole point of saving a view is that a reviewer can use it.
+  if (!state.readOnly) pushUndo();
+  // Re-resolve against the layers that exist now: a layer removed since the
+  // preset was saved is simply skipped, and unknown names are dropped.
+  const hidden = new Set(p.hidden);
+  for (const L of state.doc.layers) L.visible = !hidden.has(L.name);
+  p.hidden = p.hidden.filter(n => state.doc.layers.some(l => l.name === n));
+  if (!state.readOnly) { state.dirty = true; markDirty(); }
+  renderAll();
+  setPrompt((state.readOnly ? 'View applied for review: “' : 'Applied view “') + p.name + '”' +
+    (state.readOnly ? ' (' + p.hidden.length + ' hidden)' : ''));
+}
+
+function renameVisibilityPreset(index) {
+  const list = presets();
+  const p = list[index];
+  if (!p) return;
+  const input = prompt('Rename view “' + p.name + '” to:', p.name);
+  if (input == null) return;
+  const name = String(input).trim().slice(0, 40);
+  if (!name || name.toLowerCase() === p.name.toLowerCase()) return;
+  if (list.some((x, i) => i !== index && x.name.toLowerCase() === name.toLowerCase())) {
+    toast('A view named “' + name + '” already exists');
+    return;
+  }
+  pushUndo();
+  p.name = name;
+  state.dirty = true; markDirty();
+  renderAll();
+  setPrompt('Renamed view to “' + name + '”');
+}
+
+function deleteVisibilityPreset(index) {
+  const list = presets();
+  const p = list[index];
+  if (!p) return;
+  if (!window.confirm('Delete the view “' + p.name + '”?\n\nLayer visibility itself does not change.')) return;
+  pushUndo();
+  list.splice(index, 1);
+  state.dirty = true; markDirty();
+  renderAll();
+  setPrompt('Deleted view “' + p.name + '”');
+}
+
+function openPresetMenu(ev, index) {
+  closeLayerMenu();
+  const p = presets()[index];
+  if (!p) return;
+  const menu = document.createElement('div');
+  menu.id = 'layerCtxMenu';
+  layerMenuItem(menu, 'Apply this view', () => applyVisibilityPreset(index));
+  layerMenuItem(menu, 'Update from current visibility', () => {
+    pushUndo();
+    p.hidden = currentHiddenNames();
+    state.dirty = true; markDirty(); renderAll();
+    setPrompt('Updated view “' + p.name + '”');
+  });
+  layerMenuItem(menu, 'Rename', () => renameVisibilityPreset(index));
+  layerMenuItem(menu, 'Delete', () => deleteVisibilityPreset(index), true);
+  document.body.appendChild(menu);
+  const pad = 4, vw = window.innerWidth, vh = window.innerHeight;
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.min(ev.clientX, vw - r.width - pad) + 'px';
+  menu.style.top = Math.min(ev.clientY, vh - r.height - pad) + 'px';
+  setTimeout(() => document.addEventListener('mousedown', closeLayerMenu, true), 0);
+  document.addEventListener('keydown', layerMenuEscape, true);
+}
+
+function renderPresets() {
+  const box = document.getElementById('presetList');
+  if (!box) return;
+  box.innerHTML = '';
+  const list = presets();
+  if (!list.length) {
+    const hint = document.createElement('div');
+    hint.className = 'preset-empty';
+    hint.textContent = 'No saved views yet';
+    box.appendChild(hint);
+    return;
+  }
+  list.forEach((p, i) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'preset-chip' + (presetMatches(p) ? ' active' : '');
+    chip.textContent = p.name;
+    chip.title = 'Apply view “' + p.name + '” (' + p.hidden.length +
+      ' layer' + (p.hidden.length === 1 ? '' : 's') + ' hidden' +
+      (p.hidden.length ? ': ' + p.hidden.join(', ') : '') + ')' +
+      (state.readOnly ? '' : ' · right-click for more');
+    chip.onclick = (ev) => { ev.stopPropagation(); applyVisibilityPreset(i); };
+    // Read-only viewers get the views, not the editing menu behind them.
+    chip.oncontextmenu = state.readOnly
+      ? (ev) => { ev.preventDefault(); ev.stopPropagation(); }
+      : (ev) => { ev.preventDefault(); ev.stopPropagation(); openPresetMenu(ev, i); };
+    box.appendChild(chip);
+  });
 }
 
 /* ---------- layer context menu ---------- */
@@ -1516,18 +1872,57 @@ function updateMeasureHud(p, raw, coords) {
     renderMeasureHud(d.p);
   });
 }
+let hudLastMeasure = null;
+function measureCopyText(m) {
+  if (!m) return '';
+  return fmt(m.len) + (m.units || '') + '  (angle ' + fmt(m.ang) + '°, Δ ' + fmt(m.dx) + ', ' + fmt(m.dy) + ')';
+}
+function copyTextToClipboard(text) {
+  // Clipboard API needs a secure context; fall back to a hidden textarea.
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text);
+  }
+  return new Promise((resolve, reject) => {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:-1000px;left:-1000px;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      ok ? resolve() : reject(new Error('copy blocked'));
+    } catch (err) { reject(err); }
+  });
+}
+function copyLiveMeasure() {
+  if (!hudLastMeasure) {
+    toast('No live measurement yet — pick a tool and move the pointer, or measure two points.');
+    return;
+  }
+  const text = measureCopyText(hudLastMeasure);
+  copyTextToClipboard(text).then(() => {
+    toast('Copied measurement: ' + text);
+  }).catch(() => {
+    setPrompt('Clipboard blocked by the browser — measurement: ' + text);
+  });
+}
 function renderMeasureHud(p) {
   const row = document.getElementById('hud-measure');
   if (!row) return;
   const a = hudAnchor();
-  if (!a) { row.style.display = 'none'; return; }
+  if (!a) { row.style.display = 'none'; hudLastMeasure = null; return; }
   const dx = p[0] - a[0], dy = p[1] - a[1];
   const len = Math.hypot(dx, dy);
   let ang = deg(Math.atan2(dy, dx));
   if (ang < 0) ang += 360;
   const g = state.gridSnap ? state.gridStep : 0; // snap grid size for rounding
   const r = (v) => g ? Math.round(v / g) * g : v;
-  document.getElementById('hl').textContent = fmt(r(len));
+  const units = sbUnitsLabel();
+  hudLastMeasure = { len: r(len), ang: r(ang), dx: r(dx), dy: r(dy), units };
+  document.getElementById('hl').textContent = fmt(r(len)) + units;
   document.getElementById('ha').textContent = fmt(r(ang)) + '°';
   document.getElementById('hd').textContent = fmt(r(dx)) + ', ' + fmt(r(dy));
   row.style.display = 'flex';
@@ -1542,7 +1937,96 @@ function worldFromEvent(ev) {
   return s2w(ev.clientX - r.left, ev.clientY - r.top);
 }
 
+// Two or more touch pointers own the viewport until every finger is lifted.
+// The existing mouse path continues to own one-finger CAD input.
+const touchPointers = new Map();
+let touchNavigation = false;
+let touchGesture = null;
+function touchMidpoint() {
+  const pts = [...touchPointers.values()];
+  return { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+}
+function touchDistance() {
+  const pts = [...touchPointers.values()];
+  return Math.max(1, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y));
+}
+function showTouchHint() {
+  try { if (localStorage.getItem('webcad-touch-nav-hint-dismissed')) return; } catch (_) {}
+  let hint = document.getElementById('touchNavHint');
+  if (hint) return;
+  hint = document.createElement('div');
+  hint.id = 'touchNavHint';
+  hint.setAttribute('role', 'status');
+  hint.innerHTML = '<span>Two fingers pan and zoom the drawing</span><button type="button" aria-label="Dismiss touch navigation hint">Got it</button>';
+  hint.querySelector('button').addEventListener('click', () => {
+    try { localStorage.setItem('webcad-touch-nav-hint-dismissed', '1'); } catch (_) {}
+    hint.remove();
+  });
+  wrap.appendChild(hint);
+}
+function beginTouchNavigation() {
+  touchNavigation = true;
+  touchGesture = { midpoint: touchMidpoint(), distance: touchDistance() };
+  // A second finger takes ownership; never leave a selection/rubber-band drag
+  // alive to receive compatibility mouse events after the pinch.
+  if (state.drag && state.drag.moved) { state.dirty = true; markDirty(); }
+  state.drag = null;
+  state.rubber = null;
+  state.preview = null;
+  state.snapHit = null;
+  cv.classList.remove('grabbing');
+  showTouchHint();
+}
+function updateTouchNavigation() {
+  if (touchPointers.size < 2) return;
+  const midpoint = touchMidpoint();
+  const r = cv.getBoundingClientRect();
+  const sx = midpoint.x - r.left, sy = midpoint.y - r.top;
+  const before = s2w(sx, sy);
+  const distance = touchDistance();
+  const ratio = distance / touchGesture.distance;
+  state.view.zoom = Math.min(60, Math.max(0.02, state.view.zoom * ratio));
+  const after = s2w(sx, sy);
+  state.view.x += before[0] - after[0];
+  state.view.y += before[1] - after[1];
+  touchGesture = { midpoint, distance };
+  draw();
+}
+function trackTouchPointer(ev) {
+  if (ev.pointerType !== 'touch') return;
+  if (ev.type === 'pointerdown') {
+    touchPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (touchPointers.size === 2) beginTouchNavigation();
+    else if (touchPointers.size > 2) touchGesture = { midpoint: touchMidpoint(), distance: touchDistance() };
+    if (touchNavigation) { ev.preventDefault(); updateTouchNavigation(); }
+    return;
+  }
+  if (!touchPointers.has(ev.pointerId)) return;
+  if (ev.type === 'pointermove') {
+    touchPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (touchPointers.size >= 2) { ev.preventDefault(); updateTouchNavigation(); }
+    return;
+  }
+  touchPointers.delete(ev.pointerId);
+  if (touchNavigation && touchPointers.size >= 2) {
+    touchGesture = { midpoint: touchMidpoint(), distance: touchDistance() };
+    updateTouchNavigation();
+  } else if (touchNavigation && touchPointers.size === 1) {
+    // Keep the remaining finger consumed: lifting from a pinch must not start
+    // or continue a single-finger CAD operation.
+    touchGesture = null;
+  } else if (!touchPointers.size) {
+    touchNavigation = false;
+    touchGesture = null;
+  }
+}
+cv.addEventListener('pointerdown', trackTouchPointer, { passive: false });
+cv.addEventListener('pointermove', trackTouchPointer, { passive: false });
+cv.addEventListener('pointerup', trackTouchPointer);
+cv.addEventListener('pointercancel', trackTouchPointer);
+
 cv.addEventListener('mousemove', (ev) => {
+  if (touchNavigation) return;
   const raw = worldFromEvent(ev);
   state.mouseWorld = raw;
   const p = snapPoint(raw);
@@ -1659,6 +2143,7 @@ cv.addEventListener('mousemove', (ev) => {
 });
 
 cv.addEventListener('mousedown', (ev) => {
+  if (touchNavigation) return;
   if (ev.button === 1 || (ev.button === 0 && spaceDown)) {
     panning = { x: ev.clientX, y: ev.clientY, vx: state.view.x, vy: state.view.y };
     cv.classList.add('grabbing');
@@ -1666,6 +2151,7 @@ cv.addEventListener('mousedown', (ev) => {
     return;
   }
   if (ev.button === 2) return;
+  if (state.readOnly) { ev.preventDefault(); exampleNotice(); return; }
 
   const raw = worldFromEvent(ev);
   state.mouseWorld = raw;
@@ -1988,6 +2474,7 @@ cv.addEventListener('mousedown', (ev) => {
 });
 
 window.addEventListener('mouseup', (ev) => {
+  if (touchNavigation) return;
   if (panning) { panning = null; cv.classList.remove('grabbing'); return; }
   if (state.drag && state.drag.mode === 'vertex') {
     if (state.drag.moved) { state.dirty = true; markDirty(); } // autosave only on gesture commit
@@ -2101,6 +2588,7 @@ const CMD_NAMES = {
   move: 'MOVE',
   copy: 'COPY',
   offset: 'OFFSET',
+  units: 'UNITS', unit: 'UNITS', un: 'UNITS',
 };
 let cmdLogLines = [];
 function cmdLog(msg) {
@@ -2163,6 +2651,7 @@ function nearestOnEnt(e, q) {
 }
 
 function execCommand(raw) {
+  if (state.readOnly) { exampleNotice(); return true; }
   const s = (raw || '').trim();
   if (!s) return false;
   const tokens = s.split(/\s+/);
@@ -2171,6 +2660,21 @@ function execCommand(raw) {
   if (!name) return false; // not a command: caller falls back to coordinate entry
   cmdLog(name);
   const rest = tokens.slice(1);
+  if (name === 'UNITS') {
+    const want = (rest[0] || '').toLowerCase();
+    const canon = /^(mm|millimetre|millimetres|millimeter|millimeters)$/.test(want) ? 'mm'
+      : /^(in|inch|inches)$/.test(want) ? 'in'
+      : /^(ft|foot|feet)$/.test(want) ? 'ft'
+      : (want === 'none' || want === 'unitless') ? 'none' : null;
+    if (!canon) {
+      cmdLog('UNITS: mm, in, ft or none');
+      setPrompt('UNITS: type "units mm", "units in", "units ft" or "units none" — current: ' + unitLabelOf(state.doc && state.doc.units));
+      return true;
+    }
+    const r = setDocUnits(canon);
+    cmdLog('UNITS ' + unitLabelOf(canon === 'none' ? null : canon) + ' — ' + r.note);
+    return true;
+  }
   if (name === 'LINE' || name === 'RECTANGLE' || name === 'CIRCLE') {
     const tool = name === 'LINE' ? 'line' : name === 'RECTANGLE' ? 'rect' : 'circle';
     setTool(tool);
@@ -2719,6 +3223,11 @@ window.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') ev.target.blur();
     return;
   }
+  if (state.readOnly && (ev.key === 'Enter' || ev.key === 'Delete' || ev.key === 'Backspace' || (ev.ctrlKey || ev.metaKey))) {
+    ev.preventDefault();
+    exampleNotice();
+    return;
+  }
   if (ev.key === '?' || (ev.shiftKey && ev.key === '/')) { ev.preventDefault(); setCommandGuide(true); return; }
   const mod = ev.ctrlKey || ev.metaKey;
   if (mod && ev.key.toLowerCase() === 'z') { ev.preventDefault(); ev.shiftKey ? redo() : undo(); return; }
@@ -2759,6 +3268,14 @@ window.addEventListener('keydown', (ev) => {
   if (ev.key === 'F10') { ev.preventDefault(); toggle('polar', 'tgPolar'); return; }
   if (ev.key === 'F9') { ev.preventDefault(); toggle('gridSnap', 'tgGridSnap'); return; }
 
+  // Arrow-key nudge (round 10): exact micro-adjustment of the selection.
+  // One undo step per keypress, no-ops when nothing is selected, and read-only
+  // viewers get the same notice as any other edit attempt.
+  if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight' || ev.key === 'ArrowUp' || ev.key === 'ArrowDown') {
+    if (nudgeSelection(ev.key, ev.shiftKey ? 10 : 1)) { ev.preventDefault(); }
+    return;
+  }
+
   // classic CAD feel: start typing a number while a point tool is active -> grab it into the command bar
   if (ev.key.length === 1 && /[\d.,\-@<+]/.test(ev.key) && PT_TOOLS.includes(state.tool)) {
     cmdInput.value = ev.key;
@@ -2795,6 +3312,35 @@ function toggle(prop, btnId) {
 }
 
 /* ---------- edit ops ---------- */
+// Arrow-key nudge (round 10). Returns true when it handled the key, so the
+// caller only preventDefaults when the selection actually moved (or was empty
+// and we surfaced a hint). Movement reuses applyTranslate, so every entity type
+// the mouse drag supports nudges identically.
+function nudgeSelection(key, step) {
+  if (!state.doc || state.readOnly) return false;
+  const dmap = {
+    ArrowLeft: [-step, 0], ArrowRight: [step, 0],
+    ArrowUp: [0, step], ArrowDown: [0, -step],
+  };
+  const d = dmap[key];
+  if (!d) return false;
+  const ents = state.doc.entities.filter(e => state.sel.has(e.id) && !lockedLayer(e.layer));
+  if (!ents.length) {
+    if (state.sel.size) setPrompt('Nudge: the selection is on a locked layer');
+    else setPrompt('Nudge: select objects first (arrow keys move them by 1, Shift+Arrow by 10)');
+    return true;
+  }
+  pushUndo();
+  applyTranslate(ents, d);
+  state.dirty = true;
+  markDirty();
+  renderAll();
+  setPrompt('Nudged ' + ents.length + ' object' + (ents.length === 1 ? '' : 's') + ' by ' +
+    d[0] + ', ' + d[1] + ' (Shift+Arrow = 10)');
+  draw();
+  return true;
+}
+
 function deleteSelection() {
   if (!state.sel.size) return;
   pushUndo();
@@ -2996,6 +3542,7 @@ let saveTimer = null;
 function pill() { return document.getElementById('savePill'); }
 
 function markDirty() {
+  if (state.readOnly) { exampleNotice(); return; }
   state.dirty = true;
   const p = pill();
   if (p) { p.textContent = 'unsaved'; p.className = 'status-pill dirty'; }
@@ -3029,11 +3576,15 @@ function docPayload() {
       entities: state.doc.entities,
       currentLayer: state.doc.currentLayer,
       underlay: state.doc.underlay || null,
+      units: state.doc.units || null,
+      drawingScale: Number.isInteger(state.doc.drawingScale) && state.doc.drawingScale >= 1 && state.doc.drawingScale <= 10000 ? state.doc.drawingScale : null,
+      visibilityPresets: state.doc.visibilityPresets || [],
     },
   };
 }
 
 async function saveDrawing(auto) {
+  if (state.readOnly) { exampleNotice(); return null; }
   if (!state.doc) return null;
   const p = pill();
   if (p) { p.textContent = 'saving\\u2026'; p.className = 'status-pill saving'; }
@@ -3065,15 +3616,20 @@ async function saveDrawing(auto) {
   }
 }
 
-function loadDoc(data, id, name) {
+function loadDoc(data, id, name, readOnly) {
   state.doc = {
     layers: (data && data.layers && data.layers.length) ? data.layers : emptyDoc().layers,
     entities: (data && Array.isArray(data.entities)) ? data.entities : [],
     currentLayer: (data && data.currentLayer) || 'Walls',
     underlay: (data && data.underlay) ? data.underlay : null,
+    units: (data && (data.units === 'mm' || data.units === 'in' || data.units === 'ft' || data.units === 'none')) ? data.units : null,
+    drawingScale: (data && Number.isInteger(data.drawingScale) && data.drawingScale >= 1 && data.drawingScale <= 10000) ? data.drawingScale : null,
+    visibilityPresets: [],
   };
+  state.doc.visibilityPresets = sanitizePresets(data && data.visibilityPresets);
   if (state.doc.underlay) ensureUnderlayImage(state.doc.underlay);
   state.drawingId = id || null;
+  state.readOnly = !!readOnly;
   state.sel.clear();
   state.undo.length = 0;
   state.redo.length = 0;
@@ -3086,13 +3642,59 @@ function loadDoc(data, id, name) {
   if (p) { p.textContent = 'saved'; p.className = 'status-pill'; }
   renderAll();
   try { zoomExtents(); } catch (e) { draw(); }
+  renderExampleBanner();
 }
 
 function closeOpen() {
   document.getElementById('openModal').classList.remove('show');
 }
 
+/* ---------- unsaved-work guard (round 6) ---------- */
+// A dirty drawing must never be replaced by silence. Every entry point that
+// swaps the canvas asks first, and offers Save so the work is not lost.
+let replaceResolve = null;
+
+function finishReplace(choice) {
+  const m = document.getElementById('replaceModal');
+  if (m) m.classList.remove('show');
+  const r = replaceResolve;
+  replaceResolve = null;
+  if (r) r(choice);
+}
+
+function confirmReplace(label, detail) {
+  if (!state.dirty || state.readOnly || !state.doc) return Promise.resolve('continue');
+  return new Promise((resolve) => {
+    const m = document.getElementById('replaceModal');
+    if (!m) {
+      resolve(window.confirm('Discard unsaved changes and ' + label + '?') ? 'discard' : 'cancel');
+      return;
+    }
+    const msg = document.getElementById('replaceMsg');
+    if (msg) {
+      msg.textContent = 'This drawing has unsaved changes. Save them, discard them, or cancel before you ' +
+        label + '.' + (detail ? '\n\n' + detail : '');
+    }
+    const go = document.getElementById('replaceSave');
+    replaceResolve = resolve;
+    m.classList.add('show');
+    if (go) { try { go.focus(); } catch (_) {} }
+  });
+}
+
+// true when the caller may replace the current drawing.
+async function approveReplace(label, detail) {
+  const choice = await confirmReplace(label, detail);
+  if (choice === 'continue' || choice === 'discard') return true;
+  if (choice !== 'save') return false;
+  const id = await saveDrawing(true);
+  if (!id) { toast('Save failed - nothing was replaced. Your drawing is still open.'); return false; }
+  return true;
+}
+/* ---------- end unsaved-work guard ---------- */
+
 async function openDrawing(id) {
+  if (!(await approveReplace('open another drawing'))) return;
   try {
     const res = await fetch('/api/drawings/' + encodeURIComponent(id));
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -3137,13 +3739,69 @@ async function showOpen() {
       row.className = 'drawing-row';
       row.innerHTML = '<div class="dr-main"><strong>' + esc(d.name) + '</strong>' +
         '<span class="dr-meta">' + (d.entity_count || 0) + ' objects / rev ' + d.rev + ' / ' +
-        esc(fmtDate(d.updated_at)) + (d.owner ? ' / ' + esc(d.owner) : '') + '</span></div>';
+        esc(fmtDate(d.updated_at)) + (d.owner ? ' / ' + esc(d.owner) : '') +
+        (d.has_share_link ? ' / <span class="share-status">' + (d.is_shared ? 'Shared link active' : 'Share link expired') + '</span>' : '') +
+        (d.is_shared && d.share_expires_at ? ' / expires ' + esc(fmtDate(d.share_expires_at)) : (d.is_shared && d.has_share_link ? ' / never expires' : '')) + '</span></div>';
+      let ttl = null;
+      if (currentUser && d.owner === currentUser.username) {
+        ttl = document.createElement('select');
+        ttl.className = 'share-ttl';
+        ttl.setAttribute('aria-label', 'Share link expiry for ' + d.name);
+        ttl.title = 'Expiry applies when you create or update the share link';
+        for (const [value, label] of [['24h', 'Expires in 24 hours'], ['7d', 'Expires in 7 days'], ['30d', 'Expires in 30 days'], ['never', 'Never expires']]) {
+          const option = document.createElement('option'); option.value = value; option.textContent = label; ttl.appendChild(option);
+        }
+        ttl.value = d.share_ttl || '7d';
+        ttl.onchange = () => { d.share_ttl = ttl.value; };
+      }
       const open = document.createElement('button');
       open.className = 'mb accent'; open.textContent = 'Open';
       open.onclick = () => openDrawing(d.id);
-      const share = document.createElement('button');
-      share.className = 'mb'; share.textContent = 'Share'; share.title = 'Copy a read-only link';
-      share.onclick = () => copyShareLink(d.id);
+      let share = null;
+      let revoke = null;
+      const isOwner = !!currentUser && d.owner === currentUser.username;
+      if (isOwner) {
+        share = document.createElement('button');
+        share.className = 'mb'; share.textContent = d.is_shared ? 'Copy link' : 'Share';
+        share.title = 'Copy a read-only link';
+        share.setAttribute('aria-label', (d.is_shared ? 'Copy' : 'Create') + ' read-only share link for ' + d.name);
+        share.onclick = async () => {
+          if (share.dataset.busy === '1') return;
+          share.dataset.busy = '1';
+          share.disabled = true;
+          const label = share.textContent;
+          share.textContent = 'Working…';
+          try {
+            const url = await copyShareLink(d.id, ttl ? ttl.value : '7d');
+            if (url) showOpen();
+          } finally {
+            share.dataset.busy = '0';
+            share.disabled = false;
+            share.textContent = label;
+          }
+        };
+        if (d.is_shared) {
+          revoke = document.createElement('button');
+          revoke.className = 'mb'; revoke.textContent = 'Revoke'; revoke.title = 'Disable the read-only link';
+          revoke.setAttribute('aria-label', 'Revoke read-only share link for ' + d.name);
+          revoke.onclick = async () => {
+            if (revoke.dataset.busy === '1') return;
+            if (!confirm('Revoke the share link for "' + d.name + '"? Anyone with the old link will lose access.')) return;
+            revoke.dataset.busy = '1';
+            revoke.disabled = true;
+            try {
+              const res = await fetch('/api/drawings/' + encodeURIComponent(d.id) + '/share', { method: 'DELETE' });
+              if (!res.ok) throw new Error('HTTP ' + res.status);
+              toast('Share link revoked');
+              showOpen();
+            } catch (err) {
+              toast('Revoke failed - ' + (err && err.message ? err.message : err));
+              revoke.disabled = false;
+              revoke.dataset.busy = '0';
+            }
+          };
+        }
+      }
       const del = document.createElement('button');
       del.className = 'mb'; del.textContent = '\\u2715'; del.title = 'Delete';
       del.onclick = async () => {
@@ -3176,7 +3834,11 @@ async function showOpen() {
           dup.textContent = label;
         }
       };
-      row.append(open, share, dup, del);
+      row.appendChild(open);
+      if (ttl) row.appendChild(ttl);
+      if (share) row.appendChild(share);
+      if (revoke) row.appendChild(revoke);
+      row.append(dup, del);
       box.appendChild(row);
     }
   } catch (err) {
@@ -3185,17 +3847,17 @@ async function showOpen() {
 }
 
 async function newDrawing() {
-  if (state.dirty && !confirm('Discard unsaved changes and start a new drawing?')) return;
+  if (!(await approveReplace('start a new drawing'))) return;
   loadDoc(emptyDoc(), null, 'Untitled Drawing');
   history.replaceState(null, '', '/');
   setPrompt('New drawing - pick a tool to start');
-  toast('New drawing');
+  showLaunchPanel(true);
 }
 
 // Read-only share link: the token grants view access, never edit access.
-async function createShareLink(id) {
+async function createShareLink(id, ttl = '7d') {
   const res = await fetch('/api/drawings/' + encodeURIComponent(id) + '/share', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ttl }),
   });
   if (res.status === 401) { toast('Sign in to create a share link'); return null; }
   if (!res.ok) {
@@ -3208,8 +3870,8 @@ async function createShareLink(id) {
   return location.origin + (json.share_path || '/s/' + json.share_token);
 }
 
-async function copyShareLink(id) {
-  const url = await createShareLink(id);
+async function copyShareLink(id, ttl = '7d') {
+  const url = await createShareLink(id, ttl);
   if (!url) return;
   try {
     await navigator.clipboard.writeText(url);
@@ -3228,6 +3890,102 @@ async function shareDrawing() {
   await copyShareLink(id);
 }
 
+/* ---------- version history (owner-only) ---------- */
+let historyBusy = false;
+
+async function openHistory() {
+  if (!currentUser) { toast('Sign in to use version history'); return; }
+  let id = state.drawingId;
+  if (!id || state.dirty) id = await saveDrawing(true);
+  if (!id) { toast('Save failed, cannot open history'); return; }
+  document.getElementById('historyModal').classList.add('show');
+  await renderHistory();
+}
+
+function closeHistory() {
+  document.getElementById('historyModal').classList.remove('show');
+}
+
+async function renderHistory() {
+  const list = document.getElementById('historyList');
+  if (!state.drawingId) { list.textContent = 'Save the drawing first to use version history.'; return; }
+  if (historyBusy) return;
+  historyBusy = true;
+  list.textContent = 'Loading…';
+  try {
+    const res = await fetch('/api/drawings/' + encodeURIComponent(state.drawingId) + '/versions');
+    if (res.status === 401) { list.textContent = 'Sign in to view version history.'; historyBusy = false; return; }
+    if (res.status === 403) { list.textContent = 'Only the owner can view version history.'; historyBusy = false; return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    const versions = json.versions || [];
+    if (!versions.length) { list.textContent = 'No checkpoints yet. Use “Save checkpoint” to keep one.'; historyBusy = false; return; }
+    list.textContent = '';
+    for (const v of versions) {
+      const row = document.createElement('div');
+      row.className = 'drawing-item';
+      const info = document.createElement('div');
+      info.className = 'drawing-info';
+      const t = document.createElement('strong');
+      t.textContent = 'Rev ' + v.rev + ' — ' + (v.label || 'Checkpoint');
+      const m = document.createElement('span');
+      m.textContent = fmtDate(v.created_at) + (Number.isFinite(v.entity_count) ? ' — ' + v.entity_count + ' entities' : '');
+      info.appendChild(t); info.appendChild(m);
+      row.appendChild(info);
+      const btn = document.createElement('button');
+      btn.className = 'mb';
+      btn.type = 'button';
+      btn.textContent = 'Restore';
+      btn.onclick = async () => {
+        if (historyBusy) return;
+        if (!confirm('Restore to rev ' + v.rev + '? A checkpoint of the current state is saved first, so this can be undone with another restore.')) return;
+        historyBusy = true;
+        try {
+          const r = await fetch('/api/drawings/' + encodeURIComponent(state.drawingId) + '/versions/' + encodeURIComponent(v.id) + '/restore', { method: 'POST' });
+          if (r.status === 401) { toast('Sign in to restore'); historyBusy = false; return; }
+          if (r.status === 403) { toast('Only the owner can restore'); historyBusy = false; return; }
+          if (!r.ok) {
+            let msg = 'HTTP ' + r.status;
+            try { const j = await r.json(); if (j && j.error) msg = j.error; } catch (e) {}
+            throw new Error(msg);
+          }
+          const j = await r.json();
+          loadDoc(j.data, state.drawingId, docName());
+          toast('Restored to rev ' + (j.restored_from_rev || v.rev) + ' (current state saved as checkpoint)');
+          await renderHistory();
+        } catch (err) {
+          toast('Restore failed - ' + (err && err.message ? err.message : err));
+        } finally { historyBusy = false; }
+      };
+      row.appendChild(btn);
+      list.appendChild(row);
+    }
+  } catch (err) {
+    list.textContent = 'Could not load history - ' + (err && err.message ? err.message : err);
+  } finally { historyBusy = false; }
+}
+
+async function createCheckpoint() {
+  if (!currentUser) { toast('Sign in to save checkpoints'); return; }
+  let id = state.drawingId;
+  if (!id || state.dirty) id = await saveDrawing(true);
+  if (!id) { toast('Save failed, cannot checkpoint'); return; }
+  if (historyBusy) return;
+  historyBusy = true;
+  try {
+    const res = await fetch('/api/drawings/' + encodeURIComponent(id) + '/versions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: 'Manual checkpoint' }),
+    });
+    if (res.status === 401) { toast('Sign in to save checkpoints'); return; }
+    if (res.status === 403) { toast('Only the owner can save checkpoints'); return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    toast('Checkpoint saved');
+    await renderHistory();
+  } catch (err) {
+    toast('Checkpoint failed - ' + (err && err.message ? err.message : err));
+  } finally { historyBusy = false; }
+}
+
 /* ---------- exporters ---------- */
 function exportJSON() {
   const body = Object.assign({ format: 'WebCAD', version: 1, name: docName() }, docPayload().data);
@@ -3235,7 +3993,8 @@ function exportJSON() {
   toast('Exported JSON');
 }
 
-function buildSVGString(bg) {
+function buildSVGString(bg, includeDims) {
+  if (includeDims === undefined) includeDims = true;
   const ex = extentsOf(state.doc.entities) || { x0: 0, y0: 0, x1: 100, y1: 100 };
   const pad = Math.max(10, Math.max(ex.x1 - ex.x0, ex.y1 - ex.y0) * 0.04);
   const w = (ex.x1 - ex.x0) + pad * 2, h = (ex.y1 - ex.y0) + pad * 2;
@@ -3276,6 +4035,7 @@ function buildSVGString(bg) {
                '" font-family="Inter, sans-serif" font-size="' + (e.size || 20) + '" font-weight="600">' +
                esc(e.text) + '</text>');
     } else if (e.type === 'dim') {
+      if (!includeDims) continue;
       const g = dimGeom(e);
       for (const seg of g.lines) {
         out.push('<line x1="' + X(seg[0][0]) + '" y1="' + Y(seg[0][1]) + '" x2="' + X(seg[1][0]) + '" y2="' +
@@ -3292,8 +4052,23 @@ function buildSVGString(bg) {
 
 function exportSVG() {
   const r = buildSVGString('#0b1017');
-  download(slug() + '.svg', r.svg, 'image/svg+xml');
-  toast('Exported SVG');
+  const dimChoice = window.confirm('SVG export options\n\nInclude dimensions as geometry + text in the file?\n\nOK = include dimensions, Cancel = export without dimensions.');
+  const rr = buildSVGString('#0b1017', dimChoice);
+  const unitMm = (state.doc && UNIT_MM[state.doc.units]) || 0;
+  let svg = rr.svg, note = 'unitless (coordinates as-is)';
+  if (unitMm) {
+    const physW = (r.w * unitMm).toFixed(2), physH = (r.h * unitMm).toFixed(2);
+    svg = svg.replace('<svg ', '<svg data-units="' + state.doc.units + '" ');
+    svg = svg.replace('width="' + r.w.toFixed(2) + '" height="' + r.h.toFixed(2) + '"',
+      'width="' + physW + 'mm" height="' + physH + 'mm"');
+    note = unitLabelOf(state.doc.units) + ' (printed at ' + physW + ' x ' + physH + ' mm at 1:1)';
+  }
+  const okExport = window.confirm('SVG export review\n\nDrawing units: ' + note + '.\nDimensions: ' +
+    (dimChoice ? 'included' : 'excluded') + '.\n\nExport this SVG?');
+  if (!okExport) { toast('SVG export cancelled'); return; }
+  download(slug() + '.svg', svg, 'image/svg+xml');
+  toast('Exported SVG (' + (unitMm ? unitLabelOf(state.doc.units) : 'unitless') +
+    ', dimensions ' + (dimChoice ? 'included' : 'excluded') + ')');
 }
 
 function dxfLine(a, b, layer) {
@@ -3301,9 +4076,12 @@ function dxfLine(a, b, layer) {
           '11', b[0].toFixed(4), '21', (-b[1]).toFixed(4)].join('\n');
 }
 
-function buildDXFExportPlan(units) {
-  const insunits = units === 'mm' ? 4 : 1; // AutoCAD INSUNITS: millimeters=4, inches=1
-  const unitLabel = insunits === 4 ? 'mm' : 'in';
+const DXF_INSUNITS = { mm: 4, in: 1, ft: 2 };
+function buildDXFExportPlan(units, includeDims) {
+  if (includeDims === undefined) includeDims = true;
+  const insunits = DXF_INSUNITS[units] || 0;
+  let dimCount = 0;
+  const unitLabel = insunits === 4 ? 'mm' : (insunits === 1 ? 'in' : (insunits === 2 ? 'ft' : 'unitless'));
   const out = [];
   const Ls = state.doc.layers;
   const exported = Object.create(null), omitted = Object.create(null);
@@ -3316,7 +4094,15 @@ function buildDXFExportPlan(units) {
   out.push(['0', 'SECTION', '2', 'ENTITIES'].join('\n'));
   for (const e of state.doc.entities) {
     const ly = e.layer || '0';
-    if (e.type === 'dim') { omit('dimensions'); continue; }
+    if (e.type === 'dim') {
+      dimCount++;
+      if (!includeDims) { omit('dimension'); continue; }
+      const g = dimGeom(e), m = mid(g.a, g.b);
+      for (const seg of g.lines) add('LINE', dxfLine(seg[0], seg[1], ly));
+      add('TEXT', ['0', 'TEXT', '8', ly, '10', m[0].toFixed(4), '20', (-m[1]).toFixed(4),
+        '40', '11', '1', g.txt.replace(/[\r\n]/g, ' ')].join('\n'));
+      continue;
+    }
     if (e.type === 'line') add('LINE', dxfLine(e.p1, e.p2, ly));
     else if (e.type === 'polyline') {
       for (let i = 0; i + 1 < e.pts.length; i++) add('LINE', dxfLine(e.pts[i], e.pts[i + 1], ly));
@@ -3341,9 +4127,18 @@ function buildDXFExportPlan(units) {
     ? 'Reference image underlay: omitted (raster tracing reference, not DXF geometry).'
     : null;
   const summary = [
-    'Source units: unknown / unset',
+    'Source units: ' + (state.doc && state.doc.units ? unitLabelOf(state.doc.units) : 'unknown / unset'),
     'Output units: ' + unitLabel,
     'Conversion: none — coordinate values exported as-is.',
+    (state.doc && state.doc.units && state.doc.units !== units && DXF_INSUNITS[units]
+      ? 'Warning: the drawing is ' + unitLabelOf(state.doc.units) + ' but this file is tagged ' + unitLabel +
+        ' — a CAD program will read every dimension ' + (unitLabel === 'ft' ? 'and think the plan is far larger' : 'at a different real size') + '. Export in drawing units unless you mean to retag the file.'
+      : null),
+    dimCount
+      ? (includeDims
+          ? 'Dimensions (' + dimCount + '): drawn as extension/measure lines + a text label — DXF R12 has no native dimension entity, so each dimension becomes basic geometry + text that measures true to the on-screen plan.'
+          : 'Dimensions (' + dimCount + '): omitted by your choice — the exported file contains no dimension geometry or text.')
+      : null,
     exportedCount ? 'Included DXF entities (' + exportedCount + '): ' + counts(exported) : 'Included DXF entities: none',
     omittedCount ? 'Omitted drawing objects (' + omittedCount + '): ' + counts(omitted) : 'Omitted drawing objects: none',
     underlayNote,
@@ -3352,14 +4147,20 @@ function buildDXFExportPlan(units) {
 }
 
 function exportDXF() {
-  const choice = window.prompt('DXF output units? Source units are unknown / unset. Coordinates will be exported as-is, without conversion. Enter mm or in.', 'mm');
+  const choice = window.prompt('DXF output units? ' + (state.doc && state.doc.units ? 'Document units: ' + unitLabelOf(state.doc.units) + '. ' : 'Source units are unknown / unset. ') + 'Coordinates will be exported as-is, without conversion. Enter mm, in, ft or none (unitless).', (state.doc && state.doc.units) || 'none');
   if (choice === null) return;
   const selected = String(choice).trim().toLowerCase();
-  if (selected !== 'mm' && selected !== 'in' && selected !== 'inch' && selected !== 'inches') {
-    toast('DXF export cancelled - choose mm or in');
+  const canon = /^(mm|millimetre|millimetres|millimeter|millimeters)$/.test(selected) ? 'mm'
+    : /^(in|inch|inches)$/.test(selected) ? 'in'
+    : /^(ft|foot|feet)$/.test(selected) ? 'ft'
+    : (selected === 'none' || selected === 'unitless') ? 'none' : null;
+  if (!canon) {
+    toast('DXF export cancelled - choose mm, in, ft or none');
     return;
   }
-  const plan = buildDXFExportPlan(selected === 'mm' ? 'mm' : 'in');
+  const dimChoice = window.confirm('DXF export review\n\n' + buildDXFExportPlan(canon, true).summary +
+    '\n\nInclude dimensions as geometry + text in the file?\n\nOK = include dimensions, Cancel = export without dimensions.');
+  const plan = buildDXFExportPlan(canon, dimChoice);
   if (!window.confirm('DXF export review\n\n' + plan.summary + '\n\nExport this file?')) return;
   download(slug() + '.dxf', plan.content, 'application/dxf');
   toast('Exported DXF (ASCII, ' + plan.units + ')' +
@@ -3370,8 +4171,33 @@ function exportPNG() {
   const ex = extentsOf(state.doc.entities) || { x0: 0, y0: 0, x1: 100, y1: 100 };
   const pad = Math.max(12, Math.max(ex.x1 - ex.x0, ex.y1 - ex.y0) * 0.05);
   const wWorld = (ex.x1 - ex.x0) + pad * 2, hWorld = (ex.y1 - ex.y0) + pad * 2;
-  const scale = Math.max(0.5, Math.min(8, 2000 / Math.max(wWorld, hWorld)));
-  const W = Math.max(64, Math.round(wWorld * scale)), H = Math.max(64, Math.round(hWorld * scale));
+  const unitMm = (state.doc && UNIT_MM[state.doc.units]) || 0;
+  let dpi = 300, physW = 0, physH = 0, W, H, scale;
+  const preflight = () => {
+    const dpiChoice = window.prompt('PNG print-at-scale export\n\nUnits: ' +
+      (unitMm ? unitLabelOf(state.doc.units) : 'unitless (document units are unset)') + '\n' +
+      'Drawing extent: ' + wWorld.toFixed(2) + ' x ' + hWorld.toFixed(2) + ' ' +
+      (unitMm ? unitLabelOf(state.doc.units) : 'units') + '\n\n' +
+      (unitMm ? 'Target print DPI (dots per inch — 96 screen, 300 print, 600 high quality):'
+              : 'Set document units (mm/in/ft) before printing to a measured scale.\nEnter target DPI anyway or Cancel to abort:') + '\n' +
+      'At the chosen DPI, the PNG prints at exact 1:1 scale when placed at ' + dpi + ' DPI.',
+      String(dpi));
+    if (dpiChoice === null) return false;
+    const d = Math.round(parseFloat(dpiChoice));
+    if (!isFinite(d) || d < 24 || d > 1200) { toast('PNG export cancelled — DPI must be between 24 and 1200'); return false; }
+    dpi = d;
+    const pxPerUnit = dpi / 25.4 * (unitMm || 25.4);
+    scale = pxPerUnit;
+    W = Math.max(64, Math.round(wWorld * scale)); H = Math.max(64, Math.round(hWorld * scale));
+    physW = wWorld * unitMm; physH = hWorld * unitMm;
+    const ok = window.confirm('PNG print-at-scale review\n\n' +
+      'Image size: ' + W + ' x ' + H + ' px at ' + dpi + ' DPI\n' +
+      (unitMm ? 'Printed size at 1:1: ' + physW.toFixed(1) + ' x ' + physH.toFixed(1) + ' mm (' +
+        (physW / 25.4).toFixed(2) + ' x ' + (physH / 25.4).toFixed(2) + ' in) — print at 100% / actual size, no scaling.'
+              : 'WARNING: units unset — printed size is not measurable. Set units first for a true-scale print.') + '\n\nExport this PNG?');
+    return ok;
+  };
+  if (!preflight()) { toast('PNG export cancelled'); return; }
   const c2 = document.createElement('canvas');
   c2.width = W; c2.height = H;
   const g = c2.getContext('2d');
@@ -3424,7 +4250,7 @@ function exportPNG() {
   c2.toBlob((blob) => {
     if (!blob) { toast('PNG export failed'); return; }
     download(slug() + '.png', blob, 'image/png');
-    toast('Exported PNG ' + W + 'x' + H);
+    toast('Exported PNG ' + W + 'x' + H + ' px at ' + dpi + ' DPI' + (unitMm ? ' (1:1 print scale)' : ''));
   }, 'image/png');
 }
 
@@ -3435,17 +4261,29 @@ const PAPER_MM = { a4: [210, 297], letter: [215.9, 279.4], a3: [297, 420] };
 
 function readPrintOptions() {
   const val = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+  const mode = val('printScaleMode');
   return {
     paper: val('printPaper') || 'a4',
     landscape: val('printOrient') === 'landscape',
-    scaleMode: val('printScaleMode') === 'custom' ? 'custom' : 'fit',
+    scaleMode: mode === 'custom' || mode === 'drawing' ? mode : 'fit',
     scalePct: Math.max(1, Math.min(10000, parseFloat(val('printScalePct')) || 100)),
+    scaleDenominator: Math.max(1, Math.min(10000, Math.round(parseFloat(val('printScaleDen')) || 50))),
     title: !document.getElementById('printTitle') || document.getElementById('printTitle').checked
   };
 }
 
 function printSheetDialog() {
   const m = document.getElementById('printModal');
+  const ratio = document.getElementById('printScaleDen');
+  const drawingOption = document.querySelector('#printScaleMode option[value="drawing"]');
+  const isUnitless = !state.doc || !UNIT_MM[state.doc.units];
+  if (ratio) ratio.value = String((state.doc && state.doc.drawingScale) || 50);
+  if (drawingOption) drawingOption.disabled = isUnitless;
+  if (isUnitless && document.getElementById('printScaleMode').value === 'drawing') document.getElementById('printScaleMode').value = 'fit';
+  const hint = document.getElementById('printScaleHint');
+  if (hint) hint.textContent = isUnitless
+    ? 'Drawing units are unset. Fit-to-page is illustrative; set mm, in or ft units before printing to a measured scale.'
+    : 'Drawing scale uses document units (' + unitLabelOf(state.doc.units) + '). Exact scale can exceed the paper; review the print preview before saving.';
   if (m) m.classList.add('show');
 }
 
@@ -3456,21 +4294,41 @@ function buildPrintSvgForPrint(opts) {
   const margin = 12;
   const titleH = opts.title ? 14 : 0;
   const availW = pw - margin * 2, availH = ph - margin * 2 - titleH;
-  let scale = Math.min(availW / r.w, availH / r.h);
-  if (opts.scaleMode === 'custom' && opts.scalePct > 0) scale = opts.scalePct / 100;
-  const drawW = r.w * scale, drawH = r.h * scale;
+  const naturalMmPerUnit = 25.4 / 96;
+  const unitMm = (state.doc && UNIT_MM[state.doc.units]) || 1;
+  let widthMm, heightMm, scaleLabel;
+  if (opts.scaleMode === 'drawing' && state.doc && UNIT_MM[state.doc.units]) {
+    widthMm = r.w * unitMm / opts.scaleDenominator;
+    heightMm = r.h * unitMm / opts.scaleDenominator;
+    scaleLabel = '1:' + opts.scaleDenominator;
+  } else if (opts.scaleMode === 'custom') {
+    widthMm = r.w * naturalMmPerUnit * opts.scalePct / 100;
+    heightMm = r.h * naturalMmPerUnit * opts.scalePct / 100;
+    scaleLabel = opts.scalePct + '% of natural size';
+  } else {
+    const fit = Math.min(availW / (r.w * naturalMmPerUnit), availH / (r.h * naturalMmPerUnit));
+    widthMm = r.w * naturalMmPerUnit * fit;
+    heightMm = r.h * naturalMmPerUnit * fit;
+    scaleLabel = 'Fit to page';
+  }
   const name = (document.getElementById('docName') && document.getElementById('docName').value) || 'Untitled Drawing';
   const date = new Date().toISOString().slice(0, 10);
-  const scaleLabel = opts.scaleMode === 'fit' ? 'Fit to page (' + Math.round(scale * 100) + '%)' : opts.scalePct + '%';
+  const svg = r.svg.replace('<svg ', '<svg style="width:' + widthMm.toFixed(3) + 'mm;height:' + heightMm.toFixed(3) + 'mm;max-width:none;max-height:none;flex:none" ');
   return {
-    w: drawW, h: drawH, scaleLabel: scaleLabel, name: name, date: date, paper: opts.paper,
-    orientation: opts.landscape ? 'landscape' : 'portrait',
-    svg: r.svg
+    w: widthMm, h: heightMm, scaleLabel: scaleLabel, name: name, date: date, paper: opts.paper,
+    orientation: opts.landscape ? 'landscape' : 'portrait', svg: svg,
+    fitsPaper: widthMm <= availW && heightMm <= availH
   };
 }
 
 function openPrintWindow() {
   const opts = readPrintOptions();
+  if (opts.scaleMode === 'drawing' && state.doc && UNIT_MM[state.doc.units] && !state.readOnly) {
+    if (state.doc.drawingScale !== opts.scaleDenominator) {
+      state.doc.drawingScale = opts.scaleDenominator;
+      markDirty();
+    }
+  }
   const p = buildPrintSvgForPrint(opts);
   const mm = (v) => v.toFixed(2) + 'mm';
   const ps = PAPER_MM[opts.paper] || PAPER_MM.a4;
@@ -3484,12 +4342,12 @@ function openPrintWindow() {
     '@page { size: ' + mm(pw) + ' ' + mm(ph) + '; margin: 0; }',
     'html,body { margin:0; padding:0; background:#fff; }',
     '.sheet { box-sizing: border-box; width:' + mm(pw) + '; height:' + mm(ph) + '; padding:' + mm(margin) + '; background:#fff; }',
-    '.draw { box-sizing: border-box; width:' + mm(pw - margin * 2) + '; height:' + mm(ph - margin * 2 - titleH) + '; display:flex; align-items:center; justify-content:center; }',
-    '.draw svg { max-width:100%; max-height:100%; }',
+    '.draw { box-sizing: border-box; width:' + mm(pw - margin * 2) + '; height:' + mm(ph - margin * 2 - titleH) + '; display:flex; align-items:center; justify-content:center; overflow:visible; }',
+    '.draw svg { max-width:none; max-height:none; flex:none; }',
     '.titleblock { height:' + mm(titleH) + '; display:flex; align-items:center; justify-content:space-between; font:9px Inter, Arial, sans-serif; color:#111; border-top:0.4mm solid #333; padding-top:1mm; }',
     '</style></head><body>',
     '<div class="sheet"><div class="draw">' + svgInner + '</div>',
-    opts.title ? '<div class="titleblock"><span>' + esc(p.name) + '</span><span>' + esc(p.scaleLabel) + ' · ' + esc(p.orientation) + '</span><span>' + esc(p.date) + '</span></div>' : '',
+    opts.title ? '<div class="titleblock"><span>' + esc(p.name) + '</span><span>' + esc(p.scaleLabel) + ' · ' + esc(p.orientation) + ' · units: ' + esc(unitLabelOf(state.doc && state.doc.units)) + (p.fitsPaper ? '' : ' · OVERSIZE: clipped at paper edges') + '</span><span>' + esc(p.date) + '</span></div>' : '',
     '</div>',
     '<script>window.onload = function(){ setTimeout(function(){ window.focus(); window.print(); }, 250); };<' + '/script>',
     '</body></html>'
@@ -3610,10 +4468,11 @@ function cleanupFromHealth() {
 
 
 /* ---------- import (JSON drag & drop) ---------- */
-function importJSONText(text) {
+async function importJSONText(text) {
   const obj = JSON.parse(text);
   const data = obj && obj.data ? obj.data : obj;
   if (!data || !Array.isArray(data.entities)) throw new Error('not an WebCAD drawing');
+  if (!(await approveReplace('import this drawing file'))) return;
   loadDoc(data, null, (obj && obj.name) || 'Imported Drawing');
   state.dirty = true; markDirty();
   toast('Imported ' + data.entities.length + ' objects');
@@ -3919,6 +4778,7 @@ function wireUI() {
   };
 
   on('btnNew', () => newDrawing());
+  on('btnLaunch', () => showLaunchPanel(true));
   on('btnOpen', () => showOpen());
   on('btnImport', () => { const inp = document.getElementById('fileImport'); if (inp) inp.click(); });
   const fi = document.getElementById('fileImport');
@@ -3926,14 +4786,21 @@ function wireUI() {
     const f = fi.files && fi.files[0];
     if (!f) return;
     const rd = new FileReader();
-    rd.onload = () => {
-      try { importDXFText(String(rd.result)); }
+    rd.onload = async () => {
+      try {
+        if (!(await approveReplace('import this DXF file'))) return;
+        importDXFText(String(rd.result));
+      }
       catch (err) { toast('Import failed - ' + (err.message || err)); }
     };
     rd.readAsText(f);
     fi.value = '';
   });
   on('closeOpen', () => closeOpen());
+  on('replaceSave', () => finishReplace('save'));
+  on('replaceDiscard', () => finishReplace('discard'));
+  on('replaceCancel', () => finishReplace('cancel'));
+  on('replaceClose', () => finishReplace('cancel'));
   on('btnSave', () => saveDrawing(false));
   on('btnUndo', () => undo());
   on('btnRedo', () => redo());
@@ -3947,7 +4814,11 @@ function wireUI() {
     draw();
   });
   on('btnShare', () => shareDrawing());
+  on('btnHistory', () => openHistory());
+  on('historyClose', () => closeHistory());
+  on('btnCheckpoint', () => createCheckpoint());
   on('btnAddLayer', () => addLayer());
+  on('btnSavePreset', () => saveVisibilityPreset());
   on('btnSelLayer', () => moveSelectionToLayer());
   on('btnMirrorX', () => mirrorSelection('x'));
   on('btnMirrorY', () => mirrorSelection('y'));
@@ -3993,6 +4864,9 @@ function wireUI() {
 
   const openModal = document.getElementById('openModal');
   if (openModal) openModal.onclick = (ev) => { if (ev.target === openModal) closeOpen(); };
+
+  const hmEl = document.getElementById('historyModal');
+  if (hmEl) hmEl.onclick = (ev) => { if (ev.target === hmEl) closeHistory(); };
 
   const tg = (id, prop) => {
     const el = document.getElementById(id);
@@ -4048,10 +4922,14 @@ function wireUI() {
       const f = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
       if (!f) return;
       const rd = new FileReader();
-      rd.onload = () => {
+      rd.onload = async () => {
         try {
-          if (/\.dxf$/i.test(f.name)) importDXFText(String(rd.result));
-          else importJSONText(String(rd.result));
+          if (/\.dxf$/i.test(f.name)) {
+            if (!(await approveReplace('import this DXF file'))) return;
+            importDXFText(String(rd.result));
+          } else {
+            await importJSONText(String(rd.result));
+          }
         }
         catch (err) { toast('Import failed - ' + (err.message || err)); }
       };
@@ -4089,20 +4967,226 @@ async function boot() {
       loadDoc(j2.drawing.data, j2.drawing.id, j2.drawing.name);
       history.replaceState(null, '', '/d/' + j2.drawing.id);
     } else {
-      loadDoc(sampleDoc(), null, 'Untitled Drawing');
-      zoomExtents();
+      loadDoc(emptyDoc(), null, 'Untitled Drawing');
+      showLaunchPanel(false);
     }
   } catch (err) {
-    loadDoc(sampleDoc(), null, 'Sample Floor Plan (offline)');
-    zoomExtents();
+    loadDoc(emptyDoc(), null, 'Untitled Drawing');
+    setPrompt('Offline — drawing stays local until the connection returns.');
+    showLaunchPanel(false);
   }
   setPrompt(PROMPTS[state.tool] || 'Ready');
+}
+
+// Switch the document's real-world unit without changing what the plan measures.
+// Geometry is rescaled so a 5000 mm wall is 5000 mm whether it is typed in mm,
+// in or ft; only the numbers on screen change. Unitless documents are retagged
+// without touching coordinates because there is no real size to convert from.
+function setDocUnits(u) {
+  const want = u === 'none' ? null : u;
+  const have = (state.doc && state.doc.units) || null;
+  if (have === want) return { ok: true, note: 'already ' + unitLabelOf(want) };
+  if (!state.doc) return { ok: false, note: 'no drawing open' };
+  if (state.readOnly) { exampleNotice(); return { ok: false, note: 'read-only shared plan' }; }
+  pushUndo();
+  let note;
+  if (have && UNIT_MM[have] && want && UNIT_MM[want]) {
+    const s = UNIT_MM[have] / UNIT_MM[want];
+    for (const e of state.doc.entities) {
+      for (const key of ['p1', 'p2', 'p', 'c']) if (e[key]) e[key] = e[key].map(v => v * s);
+      if (e.pts) e.pts = e.pts.map(q => q.map(v => v * s));
+      for (const key of ['r', 'size', 'offset']) if (typeof e[key] === 'number') e[key] *= s;
+    }
+    note = 'converted geometry from ' + unitLabelOf(have) + ' — real sizes unchanged';
+  } else if (!have && want) {
+    note = 'tagged as ' + unitLabelOf(want) + ' — coordinates left as typed, no conversion was possible';
+  } else {
+    note = 'now ' + unitLabelOf(want) + ' — coordinates left as-is';
+  }
+  state.doc.units = want;
+  state.dirty = true;
+  markDirty();
+  renderAll();
+  setPrompt('Units: ' + unitLabelOf(want) + ' — ' + note);
+  toast('Units: ' + unitLabelOf(want) + ' — ' + note);
+  return { ok: true, note };
+}
+
+function unitLabelOf(u) { return u === 'mm' ? 'mm' : (u === 'in' ? 'in' : (u === 'ft' ? 'ft' : 'unitless')); }
+// World units per millimetre of real size. Templates are authored in mm, so a
+// unit choice only scales the coordinate numbers, never the drawing itself.
+const UNIT_MM = { mm: 1, in: 25.4, ft: 304.8 };
+function applyUnitConversion(doc, u) {
+  const per = UNIT_MM[u];
+  if (!per || per === 1) { doc.units = u; return doc; }
+  const s = 1 / per;
+  for (const e of doc.entities) {
+    for (const key of ['p1', 'p2', 'p', 'c']) if (e[key]) e[key] = e[key].map(v => v * s);
+    if (e.pts) e.pts = e.pts.map(p => p.map(v => v * s));
+    for (const key of ['r', 'size', 'offset']) if (typeof e[key] === 'number') e[key] *= s;
+  }
+  doc.units = u;
+  return doc;
+}
+
+function panelUnitsValue() {
+  const el = document.getElementById('spUnits');
+  return (el && el.value) || 'mm';
+}
+
+// The launch panel may only appear over a blank, untouched, unsaved document.
+// It is deliberately non-modal: the canvas stays usable and nothing covers work.
+function launchPanelAllowed() {
+  return !!(state.doc && !state.readOnly && !state.drawingId && !state.dirty &&
+            state.doc.entities.length === 0);
+}
+
+function hideLaunchPanel(markSeen) {
+  const el = document.getElementById('startPanel');
+  if (el) el.remove();
+  if (markSeen) { try { localStorage.setItem('webcad-launch-panel-seen', '1'); } catch (_) {} }
+}
+
+function showLaunchPanel(force) {
+  if (document.getElementById('startPanel')) return;
+  // Never offer to start over on top of work: the panel is only for a blank,
+  // untouched document, whether this is the first run or a deliberate reopen.
+  if (!launchPanelAllowed()) {
+    if (force) toast('Getting started is for a blank drawing — use New to start one.');
+    return;
+  }
+  if (!force) {
+    let seen = false;
+    try { seen = !!localStorage.getItem('webcad-launch-panel-seen'); } catch (_) {}
+    if (seen) return;
+  }
+  const panel = document.createElement('div');
+  panel.id = 'startPanel';
+  panel.className = 'launch-panel';
+  panel.setAttribute('role', 'region');
+  panel.setAttribute('aria-label', 'Getting started');
+  panel.innerHTML =
+    '<div class="lp-head">' +
+      '<div><p class="lp-eyebrow">WebCAD</p><h2>Start a drawing</h2></div>' +
+      '<button type="button" class="lp-close" id="spClose" aria-label="Close the getting-started panel">&#10005;</button>' +
+    '</div>' +
+    '<ol class="lp-steps">' +
+      '<li><b>1 · Draw</b> pick Line, Rect, or Circle — points snap to ends and midpoints.</li>' +
+      '<li><b>2 · Refine</b> trim, fillet, and offset; ORTHO and POLAR keep angles exact.</li>' +
+      '<li><b>3 · Save &amp; share</b> your work autosaves; Share makes a read-only link.</li>' +
+    '</ol>' +
+    '<div class="lp-actions">' +
+      '<button type="button" class="mb accent" id="spBlank">Blank drawing</button>' +
+      '<button type="button" class="mb" id="spExample">Preview example plan</button>' +
+    '</div>' +
+    '<div class="lp-templates" aria-label="Starter templates">' +
+      '<div class="lp-subhead">Or start from an editable template</div>' +
+      '<div class="lp-template-grid">' +
+        ((typeof STARTER_TEMPLATES !== 'undefined' ? STARTER_TEMPLATES : []).map(t =>
+          '<button type="button" class="lp-template" data-template="' + t.id + '">' +
+            '<strong>' + (typeof esc === 'function' ? esc(t.name) : t.name) + '</strong>' +
+            '<span>' + (typeof esc === 'function' ? esc(t.blurb) : t.blurb) + '</span>' +
+          '</button>'
+        ).join('')) +
+      '</div>' +
+    '</div>' +
+    '<div class="lp-row">' +
+      '<label for="spUnits">Units</label>' +
+      '<select id="spUnits"><option value="mm">Millimetres (mm)</option><option value="in">Inches (in)</option><option value="ft">Feet (ft)</option><option value="none">Unitless</option></select>' +
+      '<button type="button" class="lp-link" id="spA4">A4 sheet</button>' +
+    '</div>' +
+    '<p class="lp-note">The example opens as a read-only preview. <b>Start from this plan</b> makes your own editable copy with a new name — the original example is never changed. No sign-in needed to draw or export.</p>';
+  wrap.appendChild(panel);
+
+  const close = () => { hideLaunchPanel(true); document.getElementById('cmdInput')?.focus(); };
+  document.getElementById('spClose').addEventListener('click', close);
+
+  document.getElementById('spBlank').addEventListener('click', () => {
+    const u = panelUnitsValue();
+    const d = applyUnitConversion(emptyDoc(), u);
+    loadDoc(d, null, 'Untitled Drawing');
+    zoomExtents();
+    hideLaunchPanel(true);
+    setPrompt('Blank drawing ready — pick a tool (Line, Rect, Circle) or press ? for shortcuts');
+    document.getElementById('cmdInput')?.focus();
+    toast('Blank drawing — units: ' + unitLabelOf(u));
+  });
+
+  document.getElementById('spExample').addEventListener('click', () => {
+    hideLaunchPanel(true);
+    loadSampleExample();
+    toast('Example opened read-only — use "Start from this plan" to edit a copy');
+  });
+
+  if (typeof panel.querySelectorAll === 'function') {
+    panel.querySelectorAll('[data-template]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        startFromTemplate(btn.getAttribute('data-template'));
+      });
+    });
+  }
+
+  document.getElementById('spA4').addEventListener('click', () => {
+    const u = panelUnitsValue();
+    const d = emptyDoc();
+    d.entities.push({ id: 'e1', type: 'rect', layer: '0', p1: [0, 0], p2: [210, 297] });
+    applyUnitConversion(d, u);
+    loadDoc(d, null, 'A4 Sheet');
+    zoomExtents();
+    markDirty();
+    hideLaunchPanel(true);
+    document.getElementById('cmdInput')?.focus();
+    toast('A4 sheet started — units: ' + unitLabelOf(u));
+  });
+}
+
+/* ---------- read-only example document ---------- */
+function exampleNotice() {
+  toast('This is a read-only example. Use "Start from this plan" to get an editable copy.');
+  setPrompt('Read-only example — click "Start from this plan" (top of canvas) to edit a copy.');
+}
+
+function renderExampleBanner() {
+  const old = document.getElementById('exampleBanner');
+  if (old) old.remove();
+  if (!state.readOnly) return;
+  const bar = document.createElement('div');
+  bar.id = 'exampleBanner';
+  bar.setAttribute('role', 'status');
+  bar.style.cssText = 'position:absolute;left:50%;transform:translateX(-50%);top:10px;z-index:30;' +
+    'display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:10px;' +
+    'background:#1b2634;border:1px solid #3d5470;color:#eaf1fb;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.4)';
+  const msg = document.createElement('span');
+  msg.textContent = 'Example plan — read-only preview';
+  const btn = document.createElement('button');
+  btn.className = 'mb accent';
+  btn.id = 'exampleCopyBtn';
+  btn.type = 'button';
+  btn.textContent = 'Start from this plan';
+  btn.addEventListener('click', startFromExample);
+  bar.appendChild(msg);
+  bar.appendChild(btn);
+  wrap.appendChild(bar);
+}
+
+function startFromExample() {
+  if (!state.readOnly) return;
+  const copy = JSON.parse(snapshot());
+  loadDoc(copy, null, 'Floor Plan (my copy)');
+  markDirty();
+  toast('Created an editable copy — the original example is untouched.');
+  setPrompt('Editable copy created. Pick a tool, or press ? for shortcuts.');
+}
+
+function loadSampleExample() {
+  loadDoc(sampleDoc(), null, 'Sample Floor Plan (example)', true);
+  setPrompt('Read-only example — click "Start from this plan" to edit a copy of it.');
 }
 
 window.addEventListener('load', () => { boot(); });
 
 // Debug/test hook: read-only access to view transform + selection internals.
-window.__WebCAD = { state, w2s, s2w, entitiesInWindow, parseCoordEntry };
+window.__WebCAD = { state, w2s, s2w, entitiesInWindow, parseCoordEntry, scaleBarModel, drawScaleBar };
 window.__ak = {
   filletGeom, applyFillet, defaultFilletRadius,
   trimGeom, applyTrim, extendGeom, applyExtend, entSegsFlat, rayEntIsects, rectCornersOf,
@@ -4111,6 +5195,7 @@ window.__ak = {
   readUnderlayFile, setUnderlay, clearUnderlay, calibrateUnderlay, startUnderlayCalibrate,
   placeUnderlay, underlayBBox, underlayCorners, triggerUnderlayFile, submitCalibrateModal,
   openCalibrateModal, renderUnderlayPanel, buildSVGString, buildDXFExportPlan, loadDoc, docPayload,
+  STARTER_TEMPLATES, starterTemplate, startFromTemplate, roomTemplate, gardenTemplate, benchTemplate,
   get state() { return state; },
   get currentUser() { return currentUser; },
   openAuth,
