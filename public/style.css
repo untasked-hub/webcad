@@ -170,7 +170,7 @@ body{
 .prop-input:focus{outline:1px solid var(--accent);border-color:var(--accent)}
 .prop-apply{margin-top:6px;width:100%}
 
-.btn-row{display:flex;gap:6px}
+.btn-row{display:flex;gap:6px} .selmeasure{margin-top:8px;font-size:11px} .selm-row{display:flex;justify-content:space-between;gap:8px;padding:1px 0} .selm-row span{color:#4d5c72} .selm-row b{font-weight:600}
 
 /* ---------- statusbar ---------- */
 .statusbar{

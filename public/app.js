@@ -1582,6 +1582,146 @@ function pt(p) { return '(' + fmt(p[0]) + ', ' + fmt(p[1]) + ')'; }
 function renderSelInfo() {
   const n = state.sel.size;
   document.getElementById('selInfo').textContent = n === 0 ? '0 objects' : n + ' object' + (n === 1 ? '' : 's') + ' selected';
+  renderSelMeasure();
+}
+
+/* ---------- live measurement readout for the selection ---------- */
+/* Readouts are display-only until the user places one as a dimension or text
+   entity, so the drawing stays untouched until the planner asks for a label. */
+function polySegLength(pts, closed) {
+  let L = 0;
+  for (let i = 0; i < pts.length - 1; i++) L += dist(pts[i], pts[i + 1]);
+  if (closed && pts.length > 2) L += dist(pts[pts.length - 1], pts[0]);
+  return L;
+}
+function shoelaceArea(pts) {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i], q = pts[(i + 1) % pts.length];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return Math.abs(a) / 2;
+}
+function selMeasurements(ents) {
+  // Returns { rows: [label, value], totalLen, area, angle, dim: [p1,p2]|null, centroid }
+  const rows = [];
+  let totalLen = 0, area = null, angle = null, dim = null;
+  const allPts = [];
+  const u = sbUnitsLabel();
+  const fmtL = (v) => fmt(v) + u;
+  for (const e of ents) {
+    switch (e.type) {
+      case 'line': {
+        const L = dist(e.p1, e.p2);
+        totalLen += L;
+        let a = deg(Math.atan2(e.p2[1] - e.p1[1], e.p2[0] - e.p1[0]));
+        if (a < 0) a += 360;
+        angle = a;
+        if (ents.length === 1) { rows.push(['Length', fmtL(L)], ['Angle', fmt(a) + '°']); dim = [e.p1, e.p2]; }
+        allPts.push(e.p1, e.p2);
+        break;
+      }
+      case 'rect': {
+        const w = Math.abs(e.p2[0] - e.p1[0]), h = Math.abs(e.p2[1] - e.p1[1]);
+        totalLen += 2 * (w + h);
+        if (ents.length === 1) {
+          rows.push(['Width', fmtL(w)], ['Height', fmtL(h)], ['Perimeter', fmtL(2 * (w + h))]);
+          area = w * h;
+          dim = [e.p1, [e.p2[0], e.p1[1]]];
+        }
+        allPts.push(e.p1, e.p2);
+        break;
+      }
+      case 'circle': {
+        const C = 2 * Math.PI * e.r;
+        totalLen += C;
+        if (ents.length === 1) { rows.push(['Circumference', fmtL(C)]); area = Math.PI * e.r * e.r; }
+        allPts.push(e.c);
+        break;
+      }
+      case 'arc': {
+        const g = arcPts(e, 64);
+        const L = polySegLength(g, false);
+        totalLen += L;
+        if (ents.length === 1) rows.push(['Arc length', fmtL(L)]);
+        allPts.push(e.c);
+        break;
+      }
+      case 'polyline': {
+        const closed = !!e.closed || (e.pts.length > 2 && dist(e.pts[0], e.pts[e.pts.length - 1]) < 1e-9);
+        const L = polySegLength(e.pts, closed);
+        totalLen += L;
+        if (ents.length === 1) {
+          rows.push(['Length', fmtL(L)]);
+          if (closed) area = shoelaceArea(e.pts);
+          if (e.pts.length >= 2) {
+            let a = deg(Math.atan2(e.pts[1][1] - e.pts[0][1], e.pts[1][0] - e.pts[0][0]));
+            if (a < 0) a += 360;
+            angle = a;
+            dim = [e.pts[0], e.pts[1]];
+          }
+        }
+        allPts.push(...e.pts);
+        break;
+      }
+      case 'dim': {
+        const g = dimGeom(e);
+        totalLen += g.L;
+        if (ents.length === 1) rows.push(['Measure', g.txt]);
+        allPts.push(e.p1, e.p2);
+        break;
+      }
+      default: break;
+    }
+  }
+  if (ents.length > 1) rows.unshift(['Total length', fmtL(totalLen)]);
+  if (area != null) rows.push(['Area', fmt(area) + u + '²']);
+  const centroid = allPts.length
+    ? [allPts.reduce((s, p) => s + p[0], 0) / allPts.length, allPts.reduce((s, p) => s + p[1], 0) / allPts.length]
+    : null;
+  return { rows, totalLen, area, angle, dim, centroid };
+}
+let selMeasureCache = null;
+function renderSelMeasure() {
+  const panel = document.getElementById('selMeasure');
+  if (!panel) return;
+  const btnDim = document.getElementById('btnPlaceDim');
+  const btnText = document.getElementById('btnPlaceText');
+  const ents = state.doc ? state.doc.entities.filter(e => state.sel.has(e.id)) : [];
+  selMeasureCache = null;
+  if (!ents.length || !ents.some(e => ['line', 'rect', 'circle', 'arc', 'polyline', 'dim'].includes(e.type))) {
+    panel.style.display = 'none';
+    if (btnDim) btnDim.disabled = true;
+    if (btnText) btnText.disabled = true;
+    return;
+  }
+  const m = selMeasurements(ents);
+  selMeasureCache = { ents, m };
+  panel.style.display = 'block';
+  panel.innerHTML = m.rows.map(r => '<div class="selm-row"><span>' + r[0] + '</span><b>' + r[1] + '</b></div>').join('');
+  if (btnDim) btnDim.disabled = !m.dim;
+  if (btnText) btnText.disabled = !m.rows.length;
+}
+function selMeasureText() {
+  const c = selMeasureCache;
+  if (!c || !c.m.rows.length) return '';
+  return c.m.rows.map(r => r[0] + ': ' + r[1]).join('  ');
+}
+function placeSelDimension() {
+  const c = selMeasureCache;
+  if (!c || !c.m.dim) { toast('Select a single line, rectangle or polyline to place a dimension'); return; }
+  const [p1, p2] = c.m.dim;
+  commitEntity({ type: 'dim', layer: state.doc.currentLayer, p1, p2, offset: 40 });
+  toast('Dimension placed for the measured span');
+}
+function placeSelText() {
+  const c = selMeasureCache;
+  if (!c || !c.m.rows.length) { toast('Select an object to measure first'); return; }
+  const text = selMeasureText();
+  const p = c.m.centroid || [state.view.x || 0, state.view.y || 0];
+  const size = Math.max(10, 18 / Math.max(0.05, Math.min(4, state.view.zoom || 1)));
+  commitEntity({ type: 'text', layer: state.doc.currentLayer, p, text, size });
+  toast('Measurement placed as text');
 }
 
 function setPrompt(t) {
@@ -4860,6 +5000,8 @@ function wireUI() {
   on('btnAddLayer', () => addLayer());
   on('btnSavePreset', () => saveVisibilityPreset());
   on('btnSelLayer', () => moveSelectionToLayer());
+  on('btnPlaceDim', () => placeSelDimension());
+  on('btnPlaceText', () => placeSelText());
   on('btnMirrorX', () => mirrorSelection('x'));
   on('btnMirrorY', () => mirrorSelection('y'));
   on('btnMirrorXCopy', () => mirrorSelection('x', true));
