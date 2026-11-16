@@ -280,7 +280,14 @@
 
   /* Cleanup planner: pure, returns exactly what a one-click cleanup would remove.
      Nothing is mutated here. Keeps the first occurrence of each duplicate group,
-     never removes layer "0", the current layer, or the last remaining layer. */
+     never removes layer "0", the current layer, the last remaining layer, or any
+     object that sits on a locked layer.
+
+     opts.selection: array/Set of entity ids. When it holds at least one id the
+     planner runs in "selected only" mode: zero-length and duplicate removals are
+     limited to the selected objects, duplicates are still grouped against the
+     whole drawing so an equivalent survivor always stays behind, and empty
+     layers are left untouched (a selection cleanup never edits the layer table). */
   function planCleanup(doc, opts) {
     opts = opts || {};
     var tol = opts.tolerance > 0 ? opts.tolerance : 0.01;
@@ -289,46 +296,78 @@
     var layers = (doc && Array.isArray(doc.layers)) ? doc.layers : [];
     var currentLayer = doc && doc.currentLayer;
 
+    var locked = {};
+    layers.forEach(function (l) { if (l && l.locked) locked[l.name] = true; });
+    function isLocked(e) { return !!(e && locked[e.layer]); }
+
+    var sel = null;
+    var selCount = 0;
+    if (opts.selection && typeof opts.selection.forEach === 'function') {
+      sel = {};
+      opts.selection.forEach(function (id) {
+        if (id === null || id === undefined) return;
+        if (!sel[id]) { sel[id] = true; selCount++; }
+      });
+      if (!selCount) sel = null;
+    }
+    function inSel(e) { return !sel || (e && sel[e.id] === true); }
+
     var removeIds = [];
     var seenId = {};
+    var skippedLocked = 0;
     function mark(e, why) {
       if (!e || seenId[e.id]) return;
       seenId[e.id] = why;
       removeIds.push(e.id);
     }
 
-    entities.forEach(function (e) { if (isZeroLength(e, eps)) mark(e, 'zero-length'); });
+    /* zero-length / empty objects, limited to the selection when one is given */
+    entities.forEach(function (e) {
+      if (!e) return;
+      if (!inSel(e)) return;
+      if (isLocked(e)) { skippedLocked++; return; }
+      if (isZeroLength(e, eps)) mark(e, 'zero-length');
+    });
 
+    /* duplicates: group against every unlocked object so the first occurrence of a
+       group always survives, then remove only selected members beyond that first */
     var byKey = {};
     entities.forEach(function (e) {
-      if (seenId[e.id]) return;
+      if (!e || seenId[e.id] || isLocked(e)) return;
       var k = geomKey(e, tol);
       if (!byKey[k]) byKey[k] = [];
       byKey[k].push(e);
     });
     Object.keys(byKey).forEach(function (k) {
       var group = byKey[k];
-      for (var i = 1; i < group.length; i++) mark(group[i], 'duplicate');
+      for (var i = 1; i < group.length; i++) {
+        if (!inSel(group[i])) continue;
+        if (isLocked(group[i])) { skippedLocked++; continue; }
+        mark(group[i], 'duplicate');
+      }
     });
 
-    var used = {};
-    entities.forEach(function (e) {
-      if (seenId[e.id]) return;
-      used[e.layer] = (used[e.layer] || 0) + 1;
-    });
-    var defined = {};
-    layers.forEach(function (l) { defined[l.name] = true; });
-
+    /* empty-layer sweep only for a whole-drawing cleanup */
     var removeLayers = [];
-    layers.forEach(function (l) {
-      if (l.name === '0') return;
-      if (l.name === currentLayer) return;
-      if (used[l.name]) return;
-      removeLayers.push(l.name);
-    });
-    // never strip every layer: keep at least one defined layer behind
-    var keepFloor = 1;
-    while (layers.length - removeLayers.length < keepFloor && removeLayers.length) removeLayers.pop();
+    if (!sel) {
+      var used = {};
+      entities.forEach(function (e) {
+        if (seenId[e.id]) return;
+        used[e.layer] = (used[e.layer] || 0) + 1;
+      });
+
+      layers.forEach(function (l) {
+        if (!l) return;
+        if (l.name === '0') return;
+        if (l.name === currentLayer) return;
+        if (l.locked) return;
+        if (used[l.name]) return;
+        removeLayers.push(l.name);
+      });
+      // never strip every layer: keep at least one defined layer behind
+      var keepFloor = 1;
+      while (layers.length - removeLayers.length < keepFloor && removeLayers.length) removeLayers.pop();
+    }
 
     var counts = {};
     Object.keys(seenId).forEach(function (id) {
@@ -337,13 +376,16 @@
     });
 
     return {
+      mode: sel ? 'selection' : 'drawing',
       entities: removeIds,
       layers: removeLayers,
       counts: {
         zeroLength: counts['zero-length'] || 0,
         duplicate: counts.duplicate || 0,
         entities: removeIds.length,
-        emptyLayers: removeLayers.length
+        emptyLayers: removeLayers.length,
+        selected: sel ? selCount : 0,
+        skippedLocked: skippedLocked
       },
       changes: removeIds.length + removeLayers.length > 0
     };

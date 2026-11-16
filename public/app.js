@@ -1752,6 +1752,7 @@ const PROMPTS = {
   move: 'Move: select objects then press Enter, then pick base point',
   copy: 'Copy: select objects then press Enter, then pick base point',
   rotate: 'Rotate: select objects then press Enter, then pick centre, then drag (Shift = snap 15°)',
+  rotatecopy: 'Rotate-copy: select objects then press Enter, then pick centre, then drag — originals are kept (Shift = snap 15°)',
   erase: 'Erase: click objects to delete',
   offset: 'Offset: pick an object to offset',
   fillet: 'Fillet: pick first line near the corner',
@@ -2490,7 +2491,7 @@ cv.addEventListener('mousedown', (ev) => {
     return;
   }
 
-  if ((t === 'move' || t === 'copy' || t === 'rotate') && state.phase === 'base') {
+  if ((t === 'move' || t === 'copy' || t === 'rotate' || t === 'rotatecopy') && state.phase === 'base') {
     const ents = state.doc.entities.filter(e => state.sel.has(e.id) && !lockedLayer(e.layer));
     if (!ents.length) { state.phase = null; setPrompt('Nothing selected'); return; }
     state.opBase = p;
@@ -2502,6 +2503,18 @@ cv.addEventListener('mousedown', (ev) => {
       state.phase = null;
       state.drag = { mode: 'move', ents, base: p, last: p };
       setPrompt('Move: pick destination point');
+    } else if (t === 'rotatecopy') {
+      // Rotate-copy: duplicate the selection in place, select the duplicates and
+      // rotate those, leaving the originals untouched (mirrors the mirror-copy flow).
+      pushUndo();
+      const copies = ents.map(cloneEnt);
+      state.doc.entities.push(...copies);
+      state.sel = new Set(copies.map(c => c.id));
+      state.phase = null;
+      state.dirty = true; markDirty();
+      state.drag = { mode: 'rotate', ents: copies, center: p, lastAng: 0 };
+      setPrompt('Rotate-copy: drag around the centre, release to finish');
+      renderAll();
     } else {
       pushUndo();
       state.phase = null;
@@ -2526,7 +2539,7 @@ cv.addEventListener('mousedown', (ev) => {
     return;
   }
 
-  if (t === 'move' || t === 'copy' || t === 'rotate') {
+  if (t === 'move' || t === 'copy' || t === 'rotate' || t === 'rotatecopy') {
     if (!state.phase) {
       const hit = pickAt(raw);
       if (hit) {
@@ -2537,7 +2550,7 @@ cv.addEventListener('mousedown', (ev) => {
                          x1: ev.clientX - rect.left, y1: ev.clientY - rect.top, cross: false };
       }
       renderAll();
-      if (state.sel.size) setPrompt((t === 'rotate' ? 'Rotate' : t === 'copy' ? 'Copy' : 'Move') +
+      if (state.sel.size) setPrompt((t === 'rotatecopy' ? 'Rotate-copy' : t === 'rotate' ? 'Rotate' : t === 'copy' ? 'Copy' : 'Move') +
         ': ' + state.sel.size + ' selected — press Enter to continue');
       return;
     }
@@ -3035,11 +3048,11 @@ cmdInput.addEventListener('keydown', (ev) => {
 
 function keyEnter() {
   if (state.tool === 'polyline') return finishPolyline();
-  if (['move', 'copy', 'rotate'].includes(state.tool)) {
+  if (['move', 'copy', 'rotate', 'rotatecopy'].includes(state.tool)) {
     if (!state.phase) {
       if (!state.sel.size) return toast('Select objects first');
       state.phase = 'base';
-      setPrompt((state.tool === 'rotate' ? 'Rotate' : state.tool === 'copy' ? 'Copy' : 'Move') +
+      setPrompt((state.tool === 'rotatecopy' ? 'Rotate-copy' : state.tool === 'rotate' ? 'Rotate' : state.tool === 'copy' ? 'Copy' : 'Move') +
                 ': pick base point');
       return;
     }
@@ -3556,7 +3569,7 @@ window.addEventListener('keydown', (ev) => {
 
   const k = ev.key.toLowerCase();
   const map = { v: 'select', l: 'line', p: 'polyline', r: 'rect', c: 'circle', a: 'arc',
-                t: 'text', d: 'dim', u: 'measure', m: 'move', e: 'erase', o: 'rotate', q: 'vertex', b: 'break' };
+                t: 'text', d: 'dim', u: 'measure', m: 'move', e: 'erase', o: 'rotate', w: 'rotatecopy', q: 'vertex', b: 'break' };
   if (k === 'f' && !mod) { ev.preventDefault(); fitView(); return; }
   if (map[k] && !ev.altKey) { ev.preventDefault(); setTool(map[k]); }
 });
@@ -4722,6 +4735,14 @@ function renderHealth() {
 
 function openHealth() {
   renderHealth();
+  const selOnly = document.getElementById('healthSelOnly');
+  if (selOnly) {
+    selOnly.disabled = !(state.sel && state.sel.size);
+    if (selOnly.disabled) selOnly.checked = false;
+    selOnly.title = selOnly.disabled
+      ? 'Select objects first, then clean only what is selected'
+      : 'Only clean the ' + state.sel.size + ' selected object' + (state.sel.size === 1 ? '' : 's') + '; the layer list is never touched';
+  }
   const m = document.getElementById('healthModal');
   if (m) m.classList.add('show');
 }
@@ -4740,18 +4761,33 @@ function cleanupFromHealth() {
   if (!H || typeof H.planCleanup !== 'function') { toast('Cleanup unavailable'); return; }
   const el = document.getElementById('healthTol');
   const tol = el ? Math.max(0.001, parseFloat(el.value) || 0.01) : 0.01;
+  const selOnlyEl = document.getElementById('healthSelOnly');
+  const useSel = !!(selOnlyEl && selOnlyEl.checked && state.sel && state.sel.size);
   const plan = H.planCleanup(
     { layers: state.doc.layers, entities: state.doc.entities, currentLayer: state.doc.currentLayer },
-    { tolerance: tol }
+    useSel ? { tolerance: tol, selection: Array.from(state.sel) } : { tolerance: tol }
   );
   const c = plan.counts;
-  if (!plan.changes) { toast('Nothing to clean up'); setPrompt('Health cleanup: drawing already clean'); return; }
+  if (!plan.changes) {
+    const cleanMsg = useSel
+      ? 'Health cleanup: selected objects are already clean'
+      : 'Health cleanup: drawing already clean';
+    toast(useSel ? 'Selected objects are already clean' : 'Nothing to clean up');
+    setPrompt(cleanMsg);
+    return;
+  }
   const parts = [];
   if (c.zeroLength) parts.push(c.zeroLength + ' zero-length/empty object' + (c.zeroLength === 1 ? '' : 's'));
   if (c.duplicate) parts.push(c.duplicate + ' duplicate' + (c.duplicate === 1 ? '' : 's'));
-  if (c.emptyLayers) parts.push(c.emptyLayers + ' empty layer' + (c.emptyLayers === 1 ? '' : 's'));
-  if (!window.confirm('Clean up this drawing?\n\nRemove ' + parts.join(', ') +
-      '.\n\nThis is a single undo step.')) return;
+  if (!useSel && c.emptyLayers) parts.push(c.emptyLayers + ' empty layer' + (c.emptyLayers === 1 ? '' : 's'));
+  const scope = useSel
+    ? 'Clean up the ' + c.selected + ' selected object' + (c.selected === 1 ? '' : 's') + ' only?'
+    : 'Clean up this drawing?';
+  const lockNote = c.skippedLocked
+    ? '\n\n' + c.skippedLocked + ' object' + (c.skippedLocked === 1 ? '' : 's') + ' on locked layers will be kept.'
+    : '';
+  if (!window.confirm(scope + '\n\nRemove ' + parts.join(', ') + '.' + lockNote +
+      '\n\nThis is a single undo step.')) return;
 
   pushUndo();
   const gone = new Set(plan.entities);
@@ -4765,7 +4801,8 @@ function cleanupFromHealth() {
   renderAll();
   renderHealth();
   const msg = 'Cleaned up: ' + (c.entities || 0) + ' object' + (c.entities === 1 ? '' : 's') +
-              ', ' + (c.emptyLayers || 0) + ' layer' + (c.emptyLayers === 1 ? '' : 's');
+              ', ' + (c.emptyLayers || 0) + ' layer' + (c.emptyLayers === 1 ? '' : 's') +
+              (useSel ? ' (selection)' : '');
   toast(msg + ' (undo to revert)');
   setPrompt(msg + ' — ' + 'Ctrl+Z to undo');
   cmdLog(msg);
@@ -5507,6 +5544,7 @@ const CMDK_ITEMS = [
   { label: 'Move selection', hint: 'MOVE — or type MOVE @dx,dy', key: 'M', run: () => execCommand('MOVE') },
   { label: 'Copy selection', hint: 'COPY — or type COPY @dx,dy', run: () => execCommand('COPY') },
   { label: 'Rotate', hint: 'Rotate selection', key: 'O', run: () => setTool('rotate') },
+  { label: 'Rotate with copy', hint: 'Rotate a duplicate, keep the originals', key: 'W', run: () => setTool('rotatecopy') },
   { label: 'Fillet / chamfer', hint: 'Round or bevel a corner (Shift = chamfer)', run: () => setTool('fillet') },
   { label: 'Trim', hint: 'Cut objects at an edge', run: () => setTool('trim') },
   { label: 'Extend', hint: 'Stretch a line to a boundary', run: () => setTool('extend') },
