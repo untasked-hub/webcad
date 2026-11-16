@@ -2742,6 +2742,8 @@ const CMD_NAMES = {
   copy: 'COPY',
   offset: 'OFFSET',
   join: 'JOIN', pedit: 'JOIN',
+  align: 'ALIGN', al: 'ALIGN',
+  distribute: 'DISTRIBUTE', dist: 'DISTRIBUTE',
   units: 'UNITS', unit: 'UNITS', un: 'UNITS',
 };
 let cmdLogLines = [];
@@ -2918,6 +2920,26 @@ function execCommand(raw) {
       setPrompt('Copied ' + copies.length + ' object(s) by ' + d[0].toFixed(2) + ',' + d[1].toFixed(2));
       cmdLog('Copied ' + copies.length + ' by ' + d.map(v => v.toFixed(2)).join(','));
     }
+    return true;
+  }
+  if (name === 'ALIGN') {
+    const mode = (rest[0] || '').toLowerCase();
+    if (!mode) {
+      cmdLog('ALIGN: left, center, right, top, middle, bottom');
+      setPrompt('ALIGN: pick left / center / right / top / middle / bottom — e.g. "align left"');
+      return true;
+    }
+    if (!ALIGN_MODES[mode]) { setPrompt('ALIGN: unknown side "' + mode + '" — use left, center, right, top, middle or bottom'); return true; }
+    alignSelection(mode);
+    return true;
+  }
+  if (name === 'DISTRIBUTE') {
+    const mode = (rest[0] || 'h').toLowerCase();
+    if (!/^(h|horiz|horizontal|x|v|vert|vertical|y)$/.test(mode)) {
+      setPrompt('DISTRIBUTE: use "distribute h" (horizontal gaps) or "distribute v" (vertical gaps)');
+      return true;
+    }
+    distributeSelection(mode);
     return true;
   }
   if (name === 'JOIN') {
@@ -3621,6 +3643,96 @@ function nudgeSelection(key, step) {
   setPrompt('Nudged ' + ents.length + ' object' + (ents.length === 1 ? '' : 's') + ' by ' +
     d[0] + ', ' + d[1] + ' (Shift+Arrow = 10)');
   draw();
+  return true;
+}
+
+/* ---------- align & distribute (round 14) ----------
+   Both reuse extentsOf + applyTranslate, so every entity type (line, polyline,
+   rect, circle, arc, text, dimension) moves exactly like it does for nudge.
+   Entities on locked layers are skipped, and each command is one undo step. */
+const ALIGN_MODES = {
+  left:   { axis: 'x', edge: 'lo' },
+  right:  { axis: 'x', edge: 'hi' },
+  center: { axis: 'x', edge: 'mid' }, centerx: { axis: 'x', edge: 'mid' },
+  top:    { axis: 'y', edge: 'hi' },
+  bottom: { axis: 'y', edge: 'lo' },
+  middle: { axis: 'y', edge: 'mid' }, centery: { axis: 'y', edge: 'mid' },
+};
+function editableSelection() {
+  if (!state.doc) return [];
+  return state.doc.entities.filter(e => state.sel.has(e.id) && !lockedLayer(e.layer));
+}
+function alignEdge(b, m) {
+  if (m.axis === 'x') return m.edge === 'lo' ? b.x0 : m.edge === 'hi' ? b.x1 : (b.x0 + b.x1) / 2;
+  return m.edge === 'lo' ? b.y0 : m.edge === 'hi' ? b.y1 : (b.y0 + b.y1) / 2;
+}
+function alignSelection(mode) {
+  if (!state.doc || state.readOnly) return false;
+  const m = ALIGN_MODES[String(mode || '').toLowerCase()];
+  if (!m) return false;
+  if (!state.sel.size) { setPrompt('ALIGN: select objects first — entities on locked layers are skipped'); return true; }
+  const ents = editableSelection();
+  if (ents.length !== state.sel.size) {
+    setPrompt('ALIGN: ' + (state.sel.size - ents.length) + ' selected object(s) sit on locked layers and were skipped');
+  }
+  if (ents.length < 2) {
+    setPrompt('ALIGN: select two or more editable objects (alignment needs a group)');
+    return true;
+  }
+  const all = extentsOf(ents);
+  if (!all) { setPrompt('ALIGN: the selection has no geometry'); return true; }
+  const target = alignEdge(all, m);
+  const plan = [];
+  for (const e of ents) {
+    const b = extentsOf([e]);
+    if (!b) continue;
+    const delta = alignEdge(b, m) - target;
+    if (Math.abs(delta) <= 1e-9) continue;
+    plan.push({ e, d: m.axis === 'x' ? [-delta, 0] : [0, -delta] });
+  }
+  if (!plan.length) { setPrompt('ALIGN ' + m.axis.toUpperCase() + ': already aligned'); return true; }
+  pushUndo();
+  for (const p of plan) applyTranslate([p.e], p.d);
+  state.dirty = true; markDirty(); renderAll(); draw();
+  setPrompt('Aligned ' + plan.length + ' of ' + ents.length + ' object(s) ' + mode);
+  cmdLog('ALIGN ' + mode.toUpperCase() + ' — ' + plan.length + ' moved');
+  return true;
+}
+function distributeSelection(mode) {
+  if (!state.doc || state.readOnly) return false;
+  const raw = String(mode || 'h').toLowerCase();
+  const axis = /^(v|vert|vertical|y)$/.test(raw) ? 'y' : /^(h|horiz|horizontal|x)$/.test(raw) ? 'x' : null;
+  if (!axis) return false;
+  if (!state.sel.size) { setPrompt('DISTRIBUTE: select three or more objects first'); return true; }
+  const ents = editableSelection();
+  if (ents.length !== state.sel.size) {
+    setPrompt('DISTRIBUTE: ' + (state.sel.size - ents.length) + ' selected object(s) sit on locked layers and were skipped');
+  }
+  if (ents.length < 3) { setPrompt('DISTRIBUTE: select at least three editable objects'); return true; }
+  const boxes = [];
+  for (const e of ents) { const b = extentsOf([e]); if (b) boxes.push({ e, b }); }
+  if (boxes.length < 3) { setPrompt('DISTRIBUTE: not enough geometry in the selection'); return true; }
+  const lo = (b) => axis === 'x' ? b.x0 : b.y0;
+  const hi = (b) => axis === 'x' ? b.x1 : b.y1;
+  boxes.sort((a, b) => lo(a.b) - lo(b.b));
+  const span = hi(boxes[boxes.length - 1].b) - lo(boxes[0].b);
+  const total = boxes.reduce((s, q) => s + (hi(q.b) - lo(q.b)), 0);
+  const gap = (span - total) / (boxes.length - 1);
+  const plan = [];
+  let cursor = lo(boxes[0].b);
+  for (const q of boxes) {
+    const d = cursor - lo(q.b);
+    if (Math.abs(d) > 1e-9) plan.push({ e: q.e, d: axis === 'x' ? [d, 0] : [0, d] });
+    cursor += (hi(q.b) - lo(q.b)) + gap;
+  }
+  if (!plan.length) { setPrompt('DISTRIBUTE: already evenly spaced'); return true; }
+  pushUndo();
+  for (const p of plan) applyTranslate([p.e], p.d);
+  state.dirty = true; markDirty(); renderAll(); draw();
+  setPrompt('Distributed ' + boxes.length + ' object(s) ' + (axis === 'x' ? 'horizontally' : 'vertically') +
+    ' — gap ' + Math.round(gap * 100) / 100 +
+    (gap < 0 ? ' (objects overlap)' : ''));
+  cmdLog('DISTRIBUTE ' + (axis === 'x' ? 'H' : 'V') + ' — ' + plan.length + ' moved');
   return true;
 }
 
@@ -5551,6 +5663,14 @@ const CMDK_ITEMS = [
   { label: 'Break', hint: 'Split an object in two', key: 'B', run: () => setTool('break') },
   { label: 'Join', hint: 'Merge connected segments into one polyline', key: 'Shift+J', run: () => execCommand('JOIN') },
   { label: 'Erase selection', hint: 'Delete selected objects', key: 'Del', run: () => deleteSelection() },
+  { label: 'Align left', hint: 'Line up the selection by its left edge', run: () => alignSelection('left') },
+  { label: 'Align centre', hint: 'Line up centres horizontally', run: () => alignSelection('center') },
+  { label: 'Align right', hint: 'Line up the selection by its right edge', run: () => alignSelection('right') },
+  { label: 'Align top', hint: 'Line up the selection by its top edge', run: () => alignSelection('top') },
+  { label: 'Align middle', hint: 'Line up centres vertically', run: () => alignSelection('middle') },
+  { label: 'Align bottom', hint: 'Line up the selection by its bottom edge', run: () => alignSelection('bottom') },
+  { label: 'Distribute horizontally', hint: 'Even gaps left to right', run: () => distributeSelection('h') },
+  { label: 'Distribute vertically', hint: 'Even gaps top to bottom', run: () => distributeSelection('v') },
   { label: 'Mirror X', hint: 'Flip selection across X', key: 'Shift+X', run: () => mirrorSelection('x', true) },
   { label: 'Mirror Y', hint: 'Flip selection across Y', key: 'Shift+Y', run: () => mirrorSelection('y', true) },
   { label: 'Rectangular array', hint: 'Grid of copies', key: 'Shift+A', run: () => arraySelection() },
