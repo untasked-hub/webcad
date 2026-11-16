@@ -2744,6 +2744,7 @@ const CMD_NAMES = {
   join: 'JOIN', pedit: 'JOIN',
   align: 'ALIGN', al: 'ALIGN',
   distribute: 'DISTRIBUTE', dist: 'DISTRIBUTE',
+  samelayer: 'SAME_LAYER', sellayer: 'SAME_LAYER', sl: 'SAME_LAYER',
   units: 'UNITS', unit: 'UNITS', un: 'UNITS',
 };
 let cmdLogLines = [];
@@ -2920,6 +2921,10 @@ function execCommand(raw) {
       setPrompt('Copied ' + copies.length + ' object(s) by ' + d[0].toFixed(2) + ',' + d[1].toFixed(2));
       cmdLog('Copied ' + copies.length + ' by ' + d.map(v => v.toFixed(2)).join(','));
     }
+    return true;
+  }
+  if (name === 'SAME_LAYER') {
+    selectSameLayer();
     return true;
   }
   if (name === 'ALIGN') {
@@ -3540,6 +3545,7 @@ window.addEventListener('keydown', (ev) => {
   if (mod && ev.key.toLowerCase() === 's') { ev.preventDefault(); saveDrawing(); return; }
   if (mod && ev.key.toLowerCase() === 'c') { ev.preventDefault(); copySelection(); return; }
   if (mod && ev.key.toLowerCase() === 'v') { ev.preventDefault(); pasteSelection(); return; }
+  if (mod && ev.shiftKey && ev.key.toLowerCase() === 'l') { ev.preventDefault(); selectSameLayer(); return; }
   if (ev.shiftKey && ev.key.toLowerCase() === 'x') { ev.preventDefault(); mirrorSelection('x', true); return; }
   if (ev.shiftKey && ev.key.toLowerCase() === 'y') { ev.preventDefault(); mirrorSelection('y', true); return; }
   if (ev.shiftKey && ev.key.toLowerCase() === 'a') { ev.preventDefault(); arraySelection(); return; }
@@ -3642,6 +3648,56 @@ function nudgeSelection(key, step) {
   renderAll();
   setPrompt('Nudged ' + ents.length + ' object' + (ents.length === 1 ? '' : 's') + ' by ' +
     d[0] + ', ' + d[1] + ' (Shift+Arrow = 10)');
+  draw();
+  return true;
+}
+
+/* ---------- select same layer (round 15) ----------
+   Turns one picked object into "everything on its layer(s)" so layer-scoped
+   revision (move to layer, align, offset, clean) is a two-step move. This is a
+   selection change only: no undo entry, no dirty flag, no document mutation, so
+   it is safe on imported/pasted geometry and works on a read-only share view.
+   Hidden layers are skipped (they cannot be picked anyway) and the prompt says
+   how many of the new objects sit on locked layers, so a follow-up command's
+   "skipped locked" message is expected rather than surprising. */
+function selectSameLayer() {
+  if (!state.doc) return false;
+  if (!state.sel.size) {
+    setPrompt('SELECT SAME LAYER: select an object first, then press Ctrl+Shift+L');
+    return true;
+  }
+  const selLayers = new Set();
+  for (const e of state.doc.entities) {
+    if (state.sel.has(e.id)) selLayers.add(e.layer);
+  }
+  if (!selLayers.size) {
+    setPrompt('SELECT SAME LAYER: the selection no longer exists in this drawing');
+    return true;
+  }
+  const next = new Set();
+  let onLocked = 0;
+  let hiddenLayers = 0;
+  for (const name of selLayers) {
+    const L = layerOf(name);
+    if (!L || !L.visible) { hiddenLayers++; continue; }
+    for (const e of state.doc.entities) {
+      if (e.layer !== name) continue;
+      next.add(e.id);
+      if (L.locked) onLocked++;
+    }
+  }
+  if (!next.size) {
+    setPrompt('SELECT SAME LAYER: every layer in the selection is hidden - show a layer first');
+    return true;
+  }
+  state.sel = next;
+  renderAll();
+  const names = Array.from(selLayers).join(', ');
+  const n = next.size;
+  setPrompt('Selected ' + n + ' object' + (n === 1 ? '' : 's') + ' on ' + selLayers.size +
+    ' layer' + (selLayers.size === 1 ? '' : 's') + ' (' + names + ')' +
+    (onLocked ? ' - ' + onLocked + ' on locked layer(s), edits will skip those' : '') +
+    (hiddenLayers ? ' - ' + hiddenLayers + ' hidden layer(s) skipped' : ''));
   draw();
   return true;
 }
@@ -5663,6 +5719,7 @@ const CMDK_ITEMS = [
   { label: 'Break', hint: 'Split an object in two', key: 'B', run: () => setTool('break') },
   { label: 'Join', hint: 'Merge connected segments into one polyline', key: 'Shift+J', run: () => execCommand('JOIN') },
   { label: 'Erase selection', hint: 'Delete selected objects', key: 'Del', run: () => deleteSelection() },
+  { label: 'Select same layer', hint: 'Select every visible object on the picked layer(s)', key: 'Ctrl+Shift+L', run: () => selectSameLayer() },
   { label: 'Align left', hint: 'Line up the selection by its left edge', run: () => alignSelection('left') },
   { label: 'Align centre', hint: 'Line up centres horizontally', run: () => alignSelection('center') },
   { label: 'Align right', hint: 'Line up the selection by its right edge', run: () => alignSelection('right') },
