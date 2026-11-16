@@ -2728,6 +2728,7 @@ const CMD_NAMES = {
   move: 'MOVE',
   copy: 'COPY',
   offset: 'OFFSET',
+  join: 'JOIN', pedit: 'JOIN',
   units: 'UNITS', unit: 'UNITS', un: 'UNITS',
 };
 let cmdLogLines = [];
@@ -2827,6 +2828,35 @@ function execCommand(raw) {
       pickPoint(c0); pickPoint([c0[0] + rr, c0[1]]);
       return true;
     }
+    // Numeric shorthand (space-separated bare numbers):
+    //   line 100 50          → line from the last point to +100,+50
+    //   rect 200 100         → rectangle of width×height from the last point
+    //   rect 10 20 200 100   → rectangle at absolute origin x,y of width×height
+    //   circle 50            → circle of radius 50 at the last point
+    const isNum = t => /^[+-]?(\d+\.?\d*|\.\d+)$/.test(t);
+    if (rest.length && rest.every(isNum)) {
+      const n = rest.map(parseFloat);
+      const originPt = state.lastPt || [0, 0];
+      if (name === 'LINE' && n.length === 2) {
+        pickPoint(originPt);
+        pickPoint([originPt[0] + n[0], originPt[1] + n[1]]);
+        return true;
+      }
+      if (name === 'RECTANGLE' && (n.length === 2 || n.length === 4)) {
+        const o = n.length === 4 ? [n[0], n[1]] : originPt;
+        const w = n.length === 4 ? n[2] : n[0], h = n.length === 4 ? n[3] : n[1];
+        if (!w || !h) { setPrompt(name + ': width and height must be non-zero'); return true; }
+        pickPoint(o);
+        pickPoint([o[0] + w, o[1] + h]);
+        return true;
+      }
+      if (name === 'CIRCLE' && n.length === 1) {
+        if (n[0] < 0.01) { setPrompt('CIRCLE: invalid radius'); return true; }
+        pickPoint(originPt);
+        pickPoint([originPt[0] + n[0], originPt[1]]);
+        return true;
+      }
+    }
     const pts = parsePointTokens(rest);
     if (!pts) { cmdLog(name + ': bad coordinates'); setPrompt(name + ': could not parse coordinates'); return true; }
     if (pts.length !== 2) { setPrompt(name + ': needs exactly 2 points'); return true; }
@@ -2841,7 +2871,9 @@ function execCommand(raw) {
     if (!rest.length) { state.phase = 'base'; setPrompt(name + ': pick base point (or run again with @dx,dy)'); return true; }
     // delta form: MOVE/COPY @dx,dy  or  dx<angle
     let d = null;
-    if (rest.length === 1) {
+    if (rest.length === 2 && rest.every(t => /^[+-]?(\d+\.?\d*|\.\d+)$/.test(t))) {
+      d = rest.map(parseFloat); // shorthand: MOVE dx dy / COPY dx dy
+    } else if (rest.length === 1) {
       const m = rest[0].match(/^@?\s*(-?\d*\.?\d+)\s*<\s*(-?\d*\.?\d+)$/);
       if (m) {
         const dist = parseFloat(m[1]), ang = parseFloat(m[2]) * Math.PI / 180;
@@ -2854,7 +2886,7 @@ function execCommand(raw) {
       const a = parseCoordEntry(rest[0], null), b = parseCoordEntry(rest[1], null);
       if (a && b) d = [b[0] - a[0], b[1] - a[1]];
     }
-    if (!d || !d.every(Number.isFinite)) { setPrompt(name + ': use ' + name + ' @dx,dy  or  ' + name + ' x1,y1 x2,y2'); return true; }
+    if (!d || !d.every(Number.isFinite)) { setPrompt(name + ': use ' + name + ' dx dy, ' + name + ' @dx,dy  or  ' + name + ' x1,y1 x2,y2'); return true; }
     const ents = state.doc.entities.filter(e => state.sel.has(e.id) && !lockedLayer(e.layer));
     if (!ents.length) { setPrompt(name + ': selection is on a locked layer'); return true; }
     if (name === 'MOVE') {
@@ -2873,6 +2905,51 @@ function execCommand(raw) {
       setPrompt('Copied ' + copies.length + ' object(s) by ' + d[0].toFixed(2) + ',' + d[1].toFixed(2));
       cmdLog('Copied ' + copies.length + ' by ' + d.map(v => v.toFixed(2)).join(','));
     }
+    return true;
+  }
+  if (name === 'JOIN') {
+    // JOIN: merge selected lines / open polylines that share endpoints into one polyline.
+    const tol = rest.length && /^[+]?(\d+\.?\d*|\.\d+)$/.test(rest[0]) ? Math.max(0, parseFloat(rest[0])) : JOIN_TOL;
+    const picked = state.doc.entities.filter(e => state.sel.has(e.id));
+    if (picked.length < 2) {
+      setPrompt('Join: select two or more connecting lines or polylines first — or type JOIN <tolerance>');
+      cmdLog('JOIN: needs at least 2 selected objects');
+      return true;
+    }
+    const usable = picked.filter(e => e.type === 'line' || e.type === 'polyline');
+    const skipped = picked.length - usable.length;
+    if (usable.length < 2) {
+      setPrompt('Join: only lines and polylines can be joined — ' + picked.length + ' selected object(s) are not joina' + 'ble geometry');
+      cmdLog('JOIN: no joinable geometry in the selection');
+      return true;
+    }
+    const layers = [...new Set(usable.map(e => e.layer))];
+    if (layers.length > 1) {
+      setPrompt('Join: the segments sit on ' + layers.length + ' different layers (' + layers.join(', ') + ') — move them to one layer first');
+      cmdLog('JOIN: mixed layers refused');
+      return true;
+    }
+    if (lockedLayer(layers[0])) { setPrompt('Join: the layer ' + (layers[0] || '(none)') + ' is locked'); return true; }
+    const chains = joinGeom(usable, tol);
+    if (chains.length !== 1) {
+      setPrompt('Join: the selection forms ' + chains.length + ' separate runs — select one connected chain of segments');
+      cmdLog('JOIN: ' + chains.length + ' disconnected chains in the selection');
+      return true;
+    }
+    const pts = chains[0];
+    if (pts.length < 3) { setPrompt('Join: those segments already form a single ' + (pts.length === 2 ? 'line' : 'polyline')); return true; }
+    const closed = pts.length > 3 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1];
+    pushUndo();
+    const ids = new Set(usable.map(e => e.id));
+    state.doc.entities = state.doc.entities.filter(e => !ids.has(e.id));
+    const merged = { type: 'polyline', layer: layers[0], pts };
+    merged.id = newId();
+    state.doc.entities.push(merged);
+    state.sel = new Set([merged.id]);
+    state.dirty = true; markDirty(); renderAll();
+    const segMsg = 'Joined ' + usable.length + ' segment(s) into one ' + (closed ? 'closed ' : '') + 'polyline (' + pts.length + ' vertices)';
+    setPrompt(segMsg + (skipped ? ' — skipped ' + skipped + ' non-joinable object(s)' : ''));
+    cmdLog('JOIN: ' + usable.length + ' segments -> ' + pts.length + ' vertices' + (closed ? ' (closed)' : ''));
     return true;
   }
   if (name === 'OFFSET') {
@@ -2943,7 +3020,7 @@ cmdInput.addEventListener('keydown', (ev) => {
     cmdInput.blur();
     if (raw && raw.trim() && execCommand(raw)) return; // command form: LINE/CIRCLE/RECTANGLE/MOVE/COPY/OFFSET
     const pt = parseCoordEntry(raw, state.lastPt);
-    if (!pt) { setPrompt('Command: LINE, RECTANGLE, CIRCLE, MOVE @dx,dy, COPY @dx,dy, OFFSET n dist — or x,y / @x,y / dist<angle'); cmdLog(raw.trim() + ': unknown command'); return; }
+    if (!pt) { setPrompt('Command: LINE dx dy, RECTANGLE w h, CIRCLE r, MOVE/COPY dx dy, OFFSET n dist, JOIN — or x,y / @x,y / dist<angle'); cmdLog(raw.trim() + ': unknown command'); return; }
     if (!PT_TOOLS.includes(state.tool)) {
       setPrompt('Command: pick a drawing tool first (L, P, R, C, A, D, T)');
       return;
@@ -3235,6 +3312,53 @@ function breakGeom(hit, p) {
   }
   return null; // circle: no-op (prompts), same for rect/text/dim
 }
+/* JOIN: the inverse of BREAK. Merge a set of lines / open polylines that share
+   endpoints (within tol) into a single polyline point list. Segments may arrive
+   in any order and either orientation; when the two free ends meet the chain is
+   closed by repeating the first point, which the area/perimeter readout and the
+   DXF/SVG exporters already understand. Returns one point array per connected
+   run, so the caller can refuse a selection that is not a single chain. */
+const JOIN_TOL = 0.001; // drawing units; snapped endpoints usually coincide exactly
+function joinGeom(ents, tol) {
+  const t = (typeof tol === 'number' && isFinite(tol) && tol >= 0) ? tol : JOIN_TOL;
+  const t2 = t * t;
+  const near = (a, b) => (a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) <= t2;
+  // Within tolerance the two points are the same vertex: snap them together so
+  // the merged polyline has exactly coincident points at every join. Without
+  // this a near-miss join leaves a hairline gap, and the area readout (which
+  // tests closure at 1e-9) would treat a closed loop as open.
+  const snap = (a, b) => { a[0] = b[0]; a[1] = b[1]; };
+  const ptsOf = e => e.type === 'line'
+    ? [[e.p1[0], e.p1[1]], [e.p2[0], e.p2[1]]]
+    : e.pts.map(q => [q[0], q[1]]);
+  const pool = ents.map(ptsOf);
+  const chains = [];
+  while (pool.length) {
+    const chain = pool.shift().map(q => [q[0], q[1]]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (let i = 0; i < pool.length; i++) {
+        const seg = pool[i];
+        const head = chain[0], tail = chain[chain.length - 1];
+        const segHead = seg[0], segTail = seg[seg.length - 1];
+        if (near(tail, segHead)) { snap(seg[0], tail); chain.push(...seg.slice(1)); }
+        else if (near(tail, segTail)) { snap(seg[seg.length - 1], tail); chain.push(...seg.slice(0, -1).reverse()); }
+        else if (near(head, segTail)) { snap(seg[seg.length - 1], head); chain.unshift(...seg.slice(0, -1)); }
+        else if (near(head, segHead)) { snap(seg[0], head); chain.unshift(...seg.slice(1).reverse()); }
+        else continue;
+        pool.splice(i, 1);
+        grew = true;
+        break;
+      }
+    }
+    // Close a loop by repeating the first point exactly (the closure convention
+    // used by draw, the area/perimeter readout and the DXF/SVG exporters).
+    if (chain.length > 3 && near(chain[0], chain[chain.length - 1])) chain[chain.length - 1] = [chain[0][0], chain[0][1]];
+    chains.push(chain);
+  }
+  return chains;
+}
 /* TRIM: keep the clicked-side run of the picked segment up to the nearest crossing.
    Returns { cut, other } or null. */
 function trimGeom(hit, nearWorld) {
@@ -3385,6 +3509,7 @@ window.addEventListener('keydown', (ev) => {
   if (ev.shiftKey && ev.key.toLowerCase() === 'y') { ev.preventDefault(); mirrorSelection('y', true); return; }
   if (ev.shiftKey && ev.key.toLowerCase() === 'a') { ev.preventDefault(); arraySelection(); return; }
   if (ev.shiftKey && ev.key.toLowerCase() === 'p') { ev.preventDefault(); polarArrayDialog(); return; }
+  if (ev.shiftKey && ev.key.toLowerCase() === 'j') { ev.preventDefault(); execCommand('JOIN'); return; }
 
   if (ev.key === 'Enter') { ev.preventDefault(); keyEnter(); return; }
   if (ev.key === 'Escape') { ev.preventDefault(); keyEscape(); return; }
@@ -5008,6 +5133,7 @@ function wireUI() {
   on('btnMirrorYCopy', () => mirrorSelection('y', true));
   on('btnArray', () => arraySelection());
   on('btnArrayPolar', () => polarArrayDialog());
+  on('btnJoin', () => execCommand('JOIN'));
   on('btnHealth', () => openHealth());
   on('healthClose', () => closeHealth());
   on('healthRerun', () => renderHealth());
@@ -5385,6 +5511,7 @@ const CMDK_ITEMS = [
   { label: 'Trim', hint: 'Cut objects at an edge', run: () => setTool('trim') },
   { label: 'Extend', hint: 'Stretch a line to a boundary', run: () => setTool('extend') },
   { label: 'Break', hint: 'Split an object in two', key: 'B', run: () => setTool('break') },
+  { label: 'Join', hint: 'Merge connected segments into one polyline', key: 'Shift+J', run: () => execCommand('JOIN') },
   { label: 'Erase selection', hint: 'Delete selected objects', key: 'Del', run: () => deleteSelection() },
   { label: 'Mirror X', hint: 'Flip selection across X', key: 'Shift+X', run: () => mirrorSelection('x', true) },
   { label: 'Mirror Y', hint: 'Flip selection across Y', key: 'Shift+Y', run: () => mirrorSelection('y', true) },
