@@ -97,6 +97,7 @@ async function init() {
   await db.query('ALTER TABLE drawings ADD COLUMN IF NOT EXISTS owner TEXT');
   await db.query('ALTER TABLE drawings ADD COLUMN IF NOT EXISTS share_token TEXT');
   await db.query('ALTER TABLE drawings ADD COLUMN IF NOT EXISTS share_expires_at TIMESTAMPTZ');
+  await db.query('ALTER TABLE drawings ADD COLUMN IF NOT EXISTS share_note TEXT');
   await db.query('CREATE UNIQUE INDEX IF NOT EXISTS drawings_share_token_idx ON drawings (share_token) WHERE share_token IS NOT NULL');
   const { rows } = await db.query('SELECT count(*)::int AS n FROM drawings');
   if (rows[0].n === 0) await seed(db);
@@ -222,13 +223,13 @@ app.get('/api/drawings', async (req, res) => {
                   (owner IS NOT NULL AND owner = $1 AND share_token IS NOT NULL AND
                     (share_expires_at IS NULL OR share_expires_at > now())) AS is_shared,
                   (owner IS NOT NULL AND owner = $1 AND share_token IS NOT NULL) AS has_share_link,
-                  share_expires_at,
+                  share_expires_at, share_note,
                   jsonb_array_length(COALESCE(data->'entities', '[]'::jsonb)) AS entity_count
              FROM drawings
             WHERE owner IS NULL OR owner = $1
             ORDER BY updated_at DESC LIMIT 100`
         : `SELECT id, name, owner, rev, created_at, updated_at,
-                  FALSE AS is_shared, FALSE AS has_share_link, NULL AS share_expires_at,
+                  FALSE AS is_shared, FALSE AS has_share_link, NULL AS share_expires_at, NULL AS share_note,
                   jsonb_array_length(COALESCE(data->'entities', '[]'::jsonb)) AS entity_count
              FROM drawings
             WHERE owner IS NULL
@@ -263,7 +264,7 @@ app.get('/api/drawings/:id', async (req, res) => {
               (owner IS NOT NULL AND owner = $2 AND share_token IS NOT NULL AND
                (share_expires_at IS NULL OR share_expires_at > now())) AS is_shared,
               (owner IS NOT NULL AND owner = $2 AND share_token IS NOT NULL) AS has_share_link,
-              share_expires_at
+              share_expires_at, share_note
          FROM drawings WHERE id = $1`,
       [req.params.id, req.user || null]
     );
@@ -387,6 +388,41 @@ app.post('/api/drawings/:id/versions/:versionId/restore', async (req, res) => {
   }
 });
 
+
+const { summarizeDocDiff } = require('./lib/doc-diff');
+
+app.get('/api/drawings/:id/versions/diff', async (req, res) => {
+  try {
+    if (!(await ownedDrawingOr(req, res))) return;
+    const pick = (raw) => String(raw === undefined || raw === null ? 'current' : raw).trim();
+    const a = pick(req.query.a), b = pick(req.query.b);
+    const loadSnapshot = async (which) => {
+      if (which === 'current' || which === '') {
+        const { rows } = await pool.query('SELECT rev, data FROM drawings WHERE id = $1', [req.params.id]);
+        if (!rows.length) return null;
+        return { label: 'current (rev ' + rows[0].rev + ')', rev: rows[0].rev, data: rows[0].data };
+      }
+      const id = Number(which);
+      if (!Number.isInteger(id) || id <= 0) return { error: 'invalid version id' };
+      const { rows } = await pool.query(
+        'SELECT id, rev, label, data FROM drawing_versions WHERE id = $1 AND drawing_id = $2',
+        [id, req.params.id]
+      );
+      if (!rows.length) return { error: 'version not found' };
+      return { label: (rows[0].label ? rows[0].label + ' (rev ' + rows[0].rev + ')' : 'rev ' + rows[0].rev), rev: rows[0].rev, data: rows[0].data };
+    };
+    const snapA = await loadSnapshot(a);
+    const snapB = await loadSnapshot(b);
+    if (!snapA || !snapB) return res.status(404).json({ error: 'drawing not found' });
+    if (snapA.error) return res.status(400).json({ error: 'a: ' + snapA.error });
+    if (snapB.error) return res.status(400).json({ error: 'b: ' + snapB.error });
+    const diff = summarizeDocDiff(snapA.data, snapB.data, snapA.label, snapB.label);
+    res.json(Object.assign({ a: snapA.label, b: snapB.label, a_rev: snapA.rev, b_rev: snapB.rev }, diff));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
 app.delete('/api/drawings/:id', async (req, res) => {
   try {
     const { rows: found } = await pool.query(
@@ -473,15 +509,33 @@ app.post('/api/drawings/:id/share', requireAuth, async (req, res) => {
       }
       hours = allowed[ttl];
     }
+    // Optional note pinned to the link; absent body field keeps the stored note.
+    let note;
+    if (req.body && req.body.note !== undefined) {
+      if (req.body.note !== null && typeof req.body.note !== 'string') {
+        return res.status(400).json({ error: 'note must be a string' });
+      }
+      const noteText = String(req.body.note == null ? '' : req.body.note).trim();
+      if (noteText.length > 140) {
+        return res.status(400).json({ error: 'note must be 140 characters or fewer' });
+      }
+      note = noteText === '' ? null : noteText;
+    }
     const token = found[0].share_token || crypto.randomBytes(16).toString('hex');
     const { rows } = await pool.query(
       `UPDATE drawings SET share_token = $2,
          share_expires_at = CASE WHEN $3::double precision IS NULL THEN NULL
-           ELSE now() + ($3::double precision * interval '1 hour') END
-       WHERE id = $1 RETURNING share_expires_at`,
-      [req.params.id, token, hours]
+           ELSE now() + ($3::double precision * interval '1 hour') END,
+         share_note = CASE WHEN $4::boolean THEN $5::text ELSE share_note END
+       WHERE id = $1 RETURNING share_expires_at, share_note`,
+      [req.params.id, token, hours, note !== undefined, note === undefined ? null : note]
     );
-    res.json({ share_token: token, share_path: '/s/' + token, share_expires_at: rows[0].share_expires_at });
+    res.json({
+      share_token: token,
+      share_path: '/s/' + token,
+      share_expires_at: rows[0].share_expires_at,
+      share_note: rows[0].share_note,
+    });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -494,7 +548,10 @@ app.delete('/api/drawings/:id/share', requireAuth, async (req, res) => {
     if (found[0].owner !== req.user) {
       return res.status(403).json({ error: 'Only the owner can revoke this share link' });
     }
-    await pool.query('UPDATE drawings SET share_token = NULL, share_expires_at = NULL WHERE id = $1', [req.params.id]);
+    await pool.query(
+      'UPDATE drawings SET share_token = NULL, share_expires_at = NULL, share_note = NULL WHERE id = $1',
+      [req.params.id]
+    );
     res.json({ ok: true, share_token: null });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
@@ -507,7 +564,7 @@ app.get('/api/share/:token', async (req, res) => {
     const token = String(req.params.token || '');
     if (!/^[a-f0-9]{16,64}$/.test(token)) return res.status(404).json({ error: 'not found' });
     const { rows } = await pool.query(
-      'SELECT id, name, data, updated_at, share_expires_at FROM drawings WHERE share_token = $1',
+      'SELECT id, name, data, updated_at, share_expires_at, share_note FROM drawings WHERE share_token = $1',
       [token]
     );
     if (!rows.length) return res.status(404).json({ error: 'This share link is no longer available' });
@@ -515,7 +572,12 @@ app.get('/api/share/:token', async (req, res) => {
     if (d.share_expires_at && new Date(d.share_expires_at).getTime() <= Date.now()) {
       return res.status(410).json({ error: 'This share link has expired', expired: true });
     }
-    res.json({ drawing: { id: d.id, name: d.name, data: d.data, updated_at: d.updated_at }, readonly: true, share_expires_at: d.share_expires_at });
+    res.json({
+      drawing: { id: d.id, name: d.name, data: d.data, updated_at: d.updated_at },
+      readonly: true,
+      share_expires_at: d.share_expires_at,
+      share_note: d.share_note || null,
+    });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }

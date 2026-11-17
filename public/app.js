@@ -4192,9 +4192,19 @@ async function showOpen() {
         '<span class="dr-meta">' + (d.entity_count || 0) + ' objects / rev ' + d.rev + ' / ' +
         esc(fmtDate(d.updated_at)) + (d.owner ? ' / ' + esc(d.owner) : '') +
         (d.has_share_link ? ' / <span class="share-status">' + (d.is_shared ? 'Shared link active' : 'Share link expired') + '</span>' : '') +
-        (d.is_shared && d.share_expires_at ? ' / expires ' + esc(fmtDate(d.share_expires_at)) : (d.is_shared && d.has_share_link ? ' / never expires' : '')) + '</span></div>';
+        (d.is_shared && d.share_expires_at ? ' / expires ' + esc(fmtDate(d.share_expires_at)) : (d.is_shared && d.has_share_link ? ' / never expires' : '')) +
+        (d.is_shared && d.share_note ? ' / note: ' + esc(d.share_note) : '') + '</span></div>';
       let ttl = null;
+      let noteInput = null;
       if (currentUser && d.owner === currentUser.username) {
+        noteInput = document.createElement('input');
+        noteInput.type = 'text';
+        noteInput.className = 'share-note';
+        noteInput.maxLength = 140;
+        noteInput.placeholder = 'Revision note (optional)';
+        noteInput.value = d.share_note || '';
+        noteInput.title = 'Pinned to the read-only link so reviewers know what changed';
+        noteInput.setAttribute('aria-label', 'Revision note for the share link of ' + d.name);
         ttl = document.createElement('select');
         ttl.className = 'share-ttl';
         ttl.setAttribute('aria-label', 'Share link expiry for ' + d.name);
@@ -4223,7 +4233,7 @@ async function showOpen() {
           const label = share.textContent;
           share.textContent = 'Working…';
           try {
-            const url = await copyShareLink(d.id, ttl ? ttl.value : '7d');
+            const url = await copyShareLink(d.id, ttl ? ttl.value : '7d', noteInput ? noteInput.value : undefined);
             if (url) showOpen();
           } finally {
             share.dataset.busy = '0';
@@ -4287,6 +4297,7 @@ async function showOpen() {
       };
       row.appendChild(open);
       if (ttl) row.appendChild(ttl);
+      if (noteInput) row.appendChild(noteInput);
       if (share) row.appendChild(share);
       if (revoke) row.appendChild(revoke);
       row.append(dup, del);
@@ -4306,9 +4317,12 @@ async function newDrawing() {
 }
 
 // Read-only share link: the token grants view access, never edit access.
-async function createShareLink(id, ttl = '7d') {
+async function createShareLink(id, ttl = '7d', note) {
+  const payload = { ttl };
+  // undefined keeps the existing note; an explicit empty string clears it.
+  if (typeof note === 'string') payload.note = note.slice(0, 140);
   const res = await fetch('/api/drawings/' + encodeURIComponent(id) + '/share', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ttl }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
   });
   if (res.status === 401) { toast('Sign in to create a share link'); return null; }
   if (!res.ok) {
@@ -4321,8 +4335,8 @@ async function createShareLink(id, ttl = '7d') {
   return location.origin + (json.share_path || '/s/' + json.share_token);
 }
 
-async function copyShareLink(id, ttl = '7d') {
-  const url = await createShareLink(id, ttl);
+async function copyShareLink(id, ttl = '7d', note) {
+  const url = await createShareLink(id, ttl, note);
   if (!url) return;
   try {
     await navigator.clipboard.writeText(url);
@@ -4370,8 +4384,9 @@ async function renderHistory() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const json = await res.json();
     const versions = json.versions || [];
-    if (!versions.length) { list.textContent = 'No checkpoints yet. Use “Save checkpoint” to keep one.'; historyBusy = false; return; }
+    if (!versions.length) { fillDiffSelectors([]); list.textContent = 'No checkpoints yet. Use “Save checkpoint” to keep one.'; historyBusy = false; return; }
     list.textContent = '';
+    fillDiffSelectors(versions);
     for (const v of versions) {
       const row = document.createElement('div');
       row.className = 'drawing-item';
@@ -4414,6 +4429,101 @@ async function renderHistory() {
   } catch (err) {
     list.textContent = 'Could not load history - ' + (err && err.message ? err.message : err);
   } finally { historyBusy = false; }
+}
+
+/* ---------- compare two saved versions (owner-only, read-only) ---------- */
+let diffSummary = null;
+
+function fillDiffSelectors(versions) {
+  const aSel = document.getElementById('diffA');
+  const bSel = document.getElementById('diffB');
+  if (!aSel || !bSel) return;
+  const keepA = aSel.value, keepB = bSel.value;
+  aSel.textContent = ''; bSel.textContent = '';
+  // Oldest to newest, then "current drawing" as the newest choice.
+  for (const v of versions.slice().reverse()) {
+    const label = 'Rev ' + v.rev + ' - ' + (v.label || 'Checkpoint');
+    const oa = document.createElement('option');
+    oa.value = String(v.id); oa.textContent = label;
+    const ob = document.createElement('option');
+    ob.value = String(v.id); ob.textContent = label;
+    aSel.appendChild(oa); bSel.appendChild(ob);
+  }
+  const cur = document.createElement('option');
+  cur.value = 'current'; cur.textContent = 'Current drawing';
+  bSel.appendChild(cur);
+  if (keepA && [...aSel.options].some((o) => o.value === keepA)) aSel.value = keepA;
+  if (keepB && [...bSel.options].some((o) => o.value === keepB)) bSel.value = keepB;
+  const hasVersions = versions.length > 0;
+  aSel.disabled = !hasVersions; bSel.disabled = !hasVersions;
+  const btn = document.getElementById('btnDiff');
+  if (btn) btn.disabled = !hasVersions;
+}
+
+function showDiffResult(j) {
+  diffSummary = j;
+  const box = document.getElementById('diffResult');
+  const lines = document.getElementById('diffLines');
+  if (!box || !lines) return;
+  lines.textContent = '';
+  const head = document.createElement('div');
+  head.className = 'diff-head';
+  head.textContent = j.a + ' -> ' + j.b;
+  lines.appendChild(head);
+  for (const line of j.lines || []) {
+    const el = document.createElement('div');
+    el.className = 'diff-line';
+    el.textContent = line;
+    lines.appendChild(el);
+  }
+  box.hidden = false;
+}
+
+async function compareVersions() {
+  if (!state.drawingId) { toast('Save the drawing first'); return; }
+  const aEl = document.getElementById('diffA');
+  const bEl = document.getElementById('diffB');
+  const a = aEl ? aEl.value : '';
+  const b = (bEl && bEl.value) || 'current';
+  if (!a) { toast('Pick a version to compare'); return; }
+  if (historyBusy) return;
+  historyBusy = true;
+  try {
+    const res = await fetch('/api/drawings/' + encodeURIComponent(state.drawingId) + '/versions/diff?a=' +
+      encodeURIComponent(a) + '&b=' + encodeURIComponent(b));
+    if (res.status === 401) { toast('Sign in to compare versions'); return; }
+    if (res.status === 403) { toast('Only the owner can compare versions'); return; }
+    if (!res.ok) {
+      let msg = 'HTTP ' + res.status;
+      try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) {}
+      throw new Error(msg);
+    }
+    showDiffResult(await res.json());
+  } catch (err) {
+    toast('Compare failed - ' + (err && err.message ? err.message : err));
+  } finally { historyBusy = false; }
+}
+
+function initDiffControls() {
+  const btn = document.getElementById('btnDiff');
+  if (btn) btn.onclick = compareVersions;
+  const copy = document.getElementById('btnDiffCopy');
+  if (copy) copy.onclick = async () => {
+    if (!diffSummary) return;
+    const text = diffSummary.a + ' -> ' + diffSummary.b + '\n' + (diffSummary.lines || []).join('\n');
+    try { await navigator.clipboard.writeText(text); toast('Diff summary copied'); }
+    catch (e) { window.prompt('Diff summary:', text); }
+  };
+  const note = document.getElementById('btnDiffNote');
+  if (note) note.onclick = async () => {
+    if (!diffSummary) return;
+    if (!state.drawingId) { toast('Save the drawing first'); return; }
+    // The share note is capped at 140 characters server-side, so pin the
+    // one-line summary instead of the whole multi-line list.
+    const text = String(diffSummary.summary || '').slice(0, 140);
+    const url = await createShareLink(state.drawingId, '7d', text);
+    if (url) toast('Share note set: ' + text);
+  };
 }
 
 async function createCheckpoint() {
@@ -5327,6 +5437,7 @@ function wireUI() {
   on('btnHistory', () => openHistory());
   on('historyClose', () => closeHistory());
   on('btnCheckpoint', () => createCheckpoint());
+  initDiffControls();
   on('btnAddLayer', () => addLayer());
   on('btnSavePreset', () => saveVisibilityPreset());
   on('btnSelLayer', () => moveSelectionToLayer());

@@ -43,6 +43,12 @@
   }
   footer a { color: #7fd1ff; text-decoration: none; font-weight: 600; }
   .count { margin-left: auto; font-family: "JetBrains Mono", ui-monospace, monospace; }
+  .note {
+    display: none; max-width: 46vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    padding: 2px 9px; border-radius: 999px; border: 1px solid #2a4a63; color: #9fd8ff;
+    background: #14212e; font-size: 12px;
+  }
+  .note.on { display: inline-block; }
 </style>
 </head>
 <body>
@@ -51,6 +57,7 @@
   <span class="badge">Read-only</span>
   <span class="name" id="name">Loading…</span>
   <span class="when" id="when"></span>
+  <span class="note" id="note" title=""></span>
 </header>
 <main id="stage">
   <canvas id="cv"></canvas>
@@ -338,6 +345,17 @@ if (!m) {
       document.getElementById('name').textContent = d.name || 'Untitled';
       document.getElementById('when').textContent =
         d.updated_at ? 'updated ' + new Date(d.updated_at).toLocaleString() : '';
+      const noteEl = document.getElementById('note');
+      const noteText = typeof json.share_note === 'string' ? json.share_note.trim() : '';
+      if (noteText) {
+        noteEl.textContent = '📌 ' + (noteText.length > 60 ? noteText.slice(0, 60) + '…' : noteText);
+        noteEl.title = noteText;
+        noteEl.classList.add('on');
+      } else {
+        noteEl.textContent = '';
+        noteEl.title = '';
+        noteEl.classList.remove('on');
+      }
       document.getElementById('count').textContent = doc.entities.length + ' entities' +
         (doc.units && doc.units !== 'none' ? ' · ' + doc.units : '');
       document.getElementById('msg').style.display = 'none';

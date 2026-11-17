@@ -356,6 +356,22 @@
     <div class="modal-foot" style="justify-content:flex-start">
       <button type="button" class="mb" id="btnCheckpoint">Save checkpoint</button>
     </div>
+    <div class="history-compare">
+      <label class="hc-field">Compare
+        <select id="diffA" aria-label="Older version to compare"></select>
+      </label>
+      <label class="hc-field">with
+        <select id="diffB" aria-label="Newer version to compare"></select>
+      </label>
+      <button type="button" class="mb" id="btnDiff">Compare</button>
+    </div>
+    <div id="diffResult" class="diff-result" hidden>
+      <div id="diffLines" class="diff-lines"></div>
+      <div class="diff-actions">
+        <button type="button" class="mb" id="btnDiffNote" title="Pin this summary to the read-only share link as the revision note">Use as share note</button>
+        <button type="button" class="mb" id="btnDiffCopy">Copy summary</button>
+      </div>
+    </div>
     <div id="historyList" class="drawing-list" style="max-height:320px;overflow:auto">Loading…</div>
   </div>
 </div>
