@@ -93,6 +93,7 @@
         <div class="hud-row"><span class="k">ZOOM</span><span id="hz">100%</span><span class="k">UNITS</span><span id="hun">mm</span></div>
         <div class="hud-row" id="hud-measure" style="display:none"><span class="k">L</span><span id="hl">—</span><span class="k">A</span><span id="ha">—</span><span class="k">Δ</span><span id="hd">—</span></div>
         <div class="hud-row" id="hud-snap" style="display:none"><span class="k">SNAP</span><span id="hs">—</span></div>
+        <div class="hud-row hud-modes" id="hud-modes" role="status" aria-label="Drafting modes"></div>
       </div>
       <div class="prompt" id="prompt">
         <span class="prompt-ico">›</span>
@@ -133,6 +134,7 @@
   <footer class="statusbar">
     <div class="st-left">
       <input id="cmdInput" class="cmd-input" placeholder="Command: LINE dx dy · RECTANGLE w h · CIRCLE r · MOVE/COPY dx dy — or x,y / @x,y / dist<angle" autocomplete="off" spellcheck="false">
+      <span id="cmdHint" class="cmd-hint" aria-live="polite"></span>
       <span id="cmdEcho">Command: —</span>
       <span id="cmdHistory" class="cmd-history" aria-live="polite"></span>
     </div>

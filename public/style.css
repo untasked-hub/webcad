@@ -185,6 +185,9 @@ body{
 }
 .cmd-input::placeholder{color:#435266}
 .cmd-input:focus{outline:none;border-color:var(--accent);background:#0e1521}
+.cmd-hint{font-size:10px;color:#7f8fa6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px;padding:2px 6px;border-left:1px solid var(--line2)}
+.cmd-hint.warn{color:#e0a35c}
+.cmd-hint:empty{display:none}
 .cmd-history{font-size:10px;opacity:.75;white-space:pre;max-width:320px;overflow:hidden}
 .st-right{display:flex;align-items:center;gap:6px}
 .toggle{
@@ -418,3 +421,7 @@ body{
 .diff-head { font-weight:600; color:#e6eaf2; margin-bottom:4px; }
 .diff-line { font-variant-numeric:tabular-nums; }
 .diff-actions { display:flex; gap:8px; margin-top:8px; }
+
+.hud-modes{gap:5px}
+.hud-modes .mode-chip{font-size:9px;letter-spacing:.06em;padding:1px 6px;border-radius:999px;border:1px solid var(--line2);color:#5c6f88;background:rgba(255,255,255,0.02);font-family:var(--mono);line-height:1.5}
+.hud-modes .mode-chip.on{color:#0b1220;background:var(--accent2,#57d0ff);border-color:var(--accent2,#57d0ff);font-weight:700}

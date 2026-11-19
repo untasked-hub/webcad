@@ -313,11 +313,19 @@ function extentsOf(ents) {
 
 /* ---------- layers ---------- */
 function layerOf(name) {
-  return state.doc.layers.find(l => l.name === name) || state.doc.layers[0];
+  const layers = state.doc && Array.isArray(state.doc.layers) ? state.doc.layers : [];
+  return layers.find(l => l && l.name === name) || layers.find(Boolean) || null;
 }
-function curLayer() { return layerOf(state.doc.currentLayer); }
+function curLayer() { return state.doc ? layerOf(state.doc.currentLayer) : null; }
 function visibleEntities() {
-  return state.doc.entities.filter(e => { const L = layerOf(e.layer); return L && L.visible; });
+  // Input/render callbacks can run during document transitions; treat an absent
+  // or malformed model as an empty drawing rather than letting snapping dereference null.
+  if (!state.doc || !Array.isArray(state.doc.entities)) return [];
+  return state.doc.entities.filter(e => {
+    if (!e || typeof e !== 'object') return false;
+    const L = layerOf(e.layer);
+    return L && L.visible;
+  });
 }
 function lockedLayer(name) { const L = layerOf(name); return L ? L.locked : false; }
 
@@ -876,6 +884,26 @@ function drawSnapMarker() {
   ctx.strokeStyle = '#7ee2a8';
   ctx.lineWidth = 1.25;
   trace(); // accent glyph on top
+
+  const name = ({ END: 'Endpoint', MID: 'Midpoint', CEN: 'Center', INT: 'Intersection', NEA: 'Nearest' })[kind] ?? kind;
+  const label = `${name} · ${fmt(p[0])}, ${fmt(p[1])}`;
+  ctx.font = '600 11px Inter, system-ui, sans-serif';
+  const width = Math.ceil(ctx.measureText(label).width) + 12;
+  const height = 20;
+  const vw = ctx.canvas.clientWidth, vh = ctx.canvas.clientHeight;
+  if (vw >= width + 8 && vh >= height + 8) {
+    const x = Math.max(4, Math.min(s[0] + 12 + width <= vw - 4 ? s[0] + 12 : s[0] - width - 12, vw - width - 4));
+    const y = Math.max(4, Math.min(s[1] + 12 + height <= vh - 4 ? s[1] + 12 : s[1] - height - 12, vh - height - 4));
+    ctx.fillStyle = '#101820';
+    ctx.fillRect(x, y, width, height);
+    ctx.strokeStyle = '#7ee2a8';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + .5, y + .5, width - 1, height - 1);
+    ctx.fillStyle = '#e9fff1';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, x + 6, y + height / 2);
+  }
   ctx.restore();
 }
 
@@ -1066,6 +1094,7 @@ function renderAll() {
   document.getElementById('countInfo').textContent = n + ' entities';
   const hun = document.getElementById('hun');
   if (hun) hun.textContent = sbUnitsLabel() || 'units';
+  renderModeHud();
 }
 
 /* ---------- side panels ---------- */
@@ -1783,6 +1812,7 @@ function setTool(t) {
   if (t !== 'underlaycal') state.calibPts = [];
   document.querySelectorAll('.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
   setPrompt(PROMPTS[t] || 'Ready');
+  updateCmdHint();
   cv.classList.toggle('grab', t === 'select');
   draw();
 }
@@ -2013,6 +2043,26 @@ function updateMeasureHud(p, raw, coords) {
     renderMeasureHud(d.p);
   });
 }
+/* Drafting-mode status chips (ORTHO / POLAR / SNAP / OSNAP / GRID).
+   Display-only: reads state, never mutates it, so it cannot influence geometry. */
+const HUD_MODES = [
+  { prop: 'ortho', label: 'ORTHO' },
+  { prop: 'polar', label: 'POLAR' },
+  { prop: 'gridSnap', label: 'SNAP' },
+  { prop: 'osnap', label: 'OSNAP' },
+  { prop: 'showGrid', label: 'GRID' },
+];
+function renderModeHud() {
+  const row = document.getElementById('hud-modes');
+  if (!row) return;
+  const key = HUD_MODES.map(m => state[m.prop] ? '1' : '0').join('');
+  if (row.dataset.key === key) return;
+  row.dataset.key = key;
+  row.innerHTML = HUD_MODES.map(m =>
+    '<span class="mode-chip' + (state[m.prop] ? ' on' : '') + '" data-mode="' + m.prop + '" aria-pressed="' + (state[m.prop] ? 'true' : 'false') + '">' + m.label + '</span>'
+  ).join('');
+}
+
 let hudLastMeasure = null;
 function measureCopyText(m) {
   if (!m) return '';
@@ -2747,6 +2797,74 @@ const CMD_NAMES = {
   samelayer: 'SAME_LAYER', sellayer: 'SAME_LAYER', sl: 'SAME_LAYER',
   units: 'UNITS', unit: 'UNITS', un: 'UNITS',
 };
+/* ---------- contextual command hint (syntax + worked example) ---------- */
+const CMD_HINTS = {
+  LINE: { syntax: 'LINE dx dy  ·  LINE x,y x,y', example: 'line 100 50' },
+  RECTANGLE: { syntax: 'RECTANGLE w h  ·  RECTANGLE x,y w h', example: 'rect 200 100' },
+  CIRCLE: { syntax: 'CIRCLE r  ·  CIRCLE x,y r', example: 'circle 50' },
+  MOVE: { syntax: 'MOVE dx dy  ·  MOVE @dx,dy', example: 'move 25 0' },
+  COPY: { syntax: 'COPY dx dy  ·  COPY @dx,dy', example: 'copy 0 40' },
+  OFFSET: { syntax: 'OFFSET <entity #> <distance>', example: 'offset 3 10' },
+  JOIN: { syntax: 'JOIN [tolerance]', example: 'join 0.5' },
+  ALIGN: { syntax: 'ALIGN left|center|right|top|middle|bottom', example: 'align left' },
+  DISTRIBUTE: { syntax: 'DISTRIBUTE h|v', example: 'distribute h' },
+  SAME_LAYER: { syntax: 'SAME_LAYER', example: 'same_layer' },
+  UNITS: { syntax: 'UNITS mm|in|ft|none', example: 'units mm' },
+};
+const TOOL_HINTS = {
+  select: { syntax: 'click or drag a window to select', example: 'then type move 25 0' },
+  line: { syntax: 'LINE dx dy', example: 'line 100 50' },
+  polyline: { syntax: 'click vertices, Enter to finish', example: 'or type x,y for each vertex' },
+  rect: { syntax: 'RECTANGLE w h', example: 'rect 200 100' },
+  circle: { syntax: 'CIRCLE r', example: 'circle 50' },
+  arc: { syntax: 'pick start, second point, end', example: 'or type x,y for each point' },
+  text: { syntax: 'pick insertion point, then type the label', example: 'or type x,y to place it' },
+  dim: { syntax: 'pick two points, then the offset', example: 'or type x,y for each point' },
+  measure: { syntax: 'pick two points to read the distance', example: 'or type x,y for each point' },
+  move: { syntax: 'MOVE dx dy', example: 'move 25 0' },
+  copy: { syntax: 'COPY dx dy', example: 'copy 0 40' },
+  rotate: { syntax: 'pick centre, then drag (Shift = 15°)', example: 'or type x,y for the centre' },
+  rotatecopy: { syntax: 'pick centre, then drag — originals kept', example: 'or type x,y for the centre' },
+  erase: { syntax: 'click objects to delete', example: 'or select and press Delete' },
+  offset: { syntax: 'OFFSET <entity #> <distance>', example: 'offset 3 10' },
+  fillet: { syntax: 'pick two lines near the corner', example: 'hold Shift for a chamfer' },
+  trim: { syntax: 'pick a cutting edge, then the parts to cut', example: 'Alt = use all edges' },
+  extend: { syntax: 'click a line end to stretch it', example: 'reaches the next boundary' },
+  break: { syntax: 'pick an object, then the split point', example: 'cuts the entity in two' },
+  vertex: { syntax: 'click a polyline, then drag a vertex', example: 'Del removes, midpoint adds' },
+  underlaycal: { syntax: 'click two points of a known distance', example: 'then enter the real length' },
+};
+const COORD_HINT = { syntax: 'x,y absolute  ·  @dx,dy relative  ·  dist<angle', example: 'e.g. @100,0 or 50<45' };
+
+function cmdHintFor(raw) {
+  const text = (raw || '').trim();
+  if (text) {
+    const head = text.split(/\s+/)[0].toLowerCase();
+    const name = CMD_NAMES[head];
+    if (name && CMD_HINTS[name]) return CMD_HINTS[name];
+    if (/^@?-?\d/.test(text) || /^@/.test(text)) return COORD_HINT;
+    if (name) return { syntax: name, example: '' };
+    // Partial typing: as soon as the prefix is unambiguous, show that command's
+    // syntax so the operator sees the argument order before finishing the word.
+    const upper = head.toUpperCase();
+    const prefix = Object.keys(CMD_HINTS).find(k => k.startsWith(upper));
+    if (prefix) return CMD_HINTS[prefix];
+    return null;
+  }
+  const tool = state && state.tool;
+  return (tool && TOOL_HINTS[tool]) || null;
+}
+
+function updateCmdHint() {
+  const el = document.getElementById('cmdHint');
+  if (!el) return;
+  const input = document.getElementById('cmdInput');
+  const hint = cmdHintFor(input ? input.value : '');
+  if (!hint) { el.textContent = ''; el.classList.remove('warn'); return; }
+  el.textContent = hint.syntax + (hint.example ? '  —  ' + hint.example : '');
+  el.classList.toggle('warn', !!(input && input.value.trim()) && !cmdHintFor(input.value));
+}
+
 let cmdLogLines = [];
 function cmdLog(msg) {
   cmdLogLines.push(msg);
@@ -3052,6 +3170,8 @@ function parseCoordEntry(str, ref) {
   return out;
 }
 
+cmdInput.addEventListener('input', () => updateCmdHint());
+cmdInput.addEventListener('focus', () => updateCmdHint());
 cmdInput.addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter') {
     ev.preventDefault();
@@ -3071,6 +3191,7 @@ cmdInput.addEventListener('keydown', (ev) => {
     cmdInput.value = '';
     cmdInput.blur();
   }
+  updateCmdHint();
 });
 
 function keyEnter() {
@@ -3609,6 +3730,7 @@ window.addEventListener('keyup', (ev) => {
 function toggle(prop, btnId) {
   state[prop] = !state[prop];
   document.getElementById(btnId).classList.toggle('on', state[prop]);
+  renderModeHud();
   if (prop === 'showGrid') draw();
   if (prop === 'ortho' || prop === 'polar' || prop === 'gridSnap' || prop === 'osnap') {
     // guide line must clear immediately, even mid-drag, when toggled off
@@ -3979,7 +4101,8 @@ document.getElementById('textOk').onclick = () => {
   }
   state.pending = [];
 };
-document.getElementById('textInput').addEventListener('keydown', (ev) => {
+const textInput = document.getElementById('textInput');
+if (textInput) textInput.addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter') document.getElementById('textOk').click();
   if (ev.key === 'Escape') document.getElementById('textCancel').click();
 });
@@ -3989,14 +4112,51 @@ document.getElementById('textInput').addEventListener('keydown', (ev) => {
 const LAYER_COLORS = ['#d9dee7', '#7fd1ff', '#ffb454', '#a6e3a1', '#f38ba8', '#cba6f7', '#94e2d5', '#fab387'];
 
 let saveTimer = null;
+let recoveryTimer = null;
+const RECOVERY_KEY = 'webcad-local-recovery-v1';
+const RECOVERY_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
 
 function pill() { return document.getElementById('savePill'); }
+
+// Checkpoints stay on this browser only; no drawing data is sent to a service.
+function writeRecoveryCheckpoint() {
+  if (!state.doc || state.readOnly || !state.dirty) return;
+  try {
+    localStorage.setItem(RECOVERY_KEY, JSON.stringify({
+      version: 1, savedAt: Date.now(), drawingId: state.drawingId || null,
+      document: docPayload(),
+    }));
+  } catch (_) { /* Storage may be disabled or full; normal editing must continue. */ }
+}
+
+function clearRecoveryCheckpoint() {
+  try { localStorage.removeItem(RECOVERY_KEY); } catch (_) {}
+}
+
+function offerRecoveryCheckpoint() {
+  if (state.readOnly) return;
+  let checkpoint;
+  try { checkpoint = JSON.parse(localStorage.getItem(RECOVERY_KEY) || 'null'); } catch (_) { clearRecoveryCheckpoint(); return; }
+  if (!checkpoint || checkpoint.version !== 1 || !checkpoint.document ||
+      !checkpoint.document.data || !Number.isFinite(checkpoint.savedAt)) return;
+  if (Date.now() - checkpoint.savedAt > RECOVERY_MAX_AGE) { clearRecoveryCheckpoint(); return; }
+  const when = new Date(checkpoint.savedAt).toLocaleString();
+  if (!window.confirm('A device-local recovery checkpoint from ' + when + ' is available. Restore it? This replaces the drawing currently open in this tab.')) return;
+  const payload = checkpoint.document;
+  loadDoc(payload.data, checkpoint.drawingId, payload.name || 'Recovered Drawing');
+  state.dirty = true;
+  markDirty();
+  setPrompt('Recovered a device-local checkpoint — save to keep it in your drawings.');
+  toast('Recovered local checkpoint');
+}
 
 function markDirty() {
   if (state.readOnly) { exampleNotice(); return; }
   state.dirty = true;
   const p = pill();
   if (p) { p.textContent = 'unsaved'; p.className = 'status-pill dirty'; }
+  clearTimeout(recoveryTimer);
+  recoveryTimer = setTimeout(writeRecoveryCheckpoint, 350);
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => { saveDrawing(true); }, 2500);
 }
@@ -4057,6 +4217,8 @@ async function saveDrawing(auto) {
     const json = await res.json();
     if (json.drawing && json.drawing.id) state.drawingId = json.drawing.id;
     state.dirty = false;
+    clearTimeout(recoveryTimer);
+    clearRecoveryCheckpoint();
     if (p) { p.textContent = 'saved'; p.className = 'status-pill'; }
     if (!auto) toast('Saved "' + docName() + '"');
     return state.drawingId;
@@ -5431,6 +5593,7 @@ function wireUI() {
     document.getElementById('btnGrid').classList.toggle('on', state.showGrid);
     const tg = document.getElementById('tgGrid');
     if (tg) tg.classList.toggle('on', state.showGrid);
+    renderModeHud();
     draw();
   });
   on('btnShare', () => shareDrawing());
@@ -5499,6 +5662,7 @@ function wireUI() {
     el.onclick = () => {
       state[prop] = !state[prop];
       el.classList.toggle('on', state[prop]);
+      renderModeHud();
       if (prop === 'showGrid') {
         const g = document.getElementById('btnGrid');
         if (g) g.classList.toggle('on', state.showGrid);
@@ -5534,7 +5698,7 @@ function wireUI() {
 
   window.addEventListener('resize', () => { resize(); });
   window.addEventListener('beforeunload', (ev) => {
-    if (state.dirty) { ev.preventDefault(); ev.returnValue = ''; }
+    if (state.dirty) { writeRecoveryCheckpoint(); ev.preventDefault(); ev.returnValue = ''; }
   });
 
   // drag & drop a JSON drawing onto the canvas
@@ -5599,6 +5763,7 @@ async function boot() {
     setPrompt('Offline — drawing stays local until the connection returns.');
     showLaunchPanel(false);
   }
+  offerRecoveryCheckpoint();
   setPrompt(PROMPTS[state.tool] || 'Ready');
 }
 
@@ -5723,9 +5888,15 @@ function showLaunchPanel(force) {
   wrap.appendChild(panel);
 
   const close = () => { hideLaunchPanel(true); document.getElementById('cmdInput')?.focus(); };
-  document.getElementById('spClose').addEventListener('click', close);
+  // Bind through the panel, not global ids: a failed lookup here must never
+  // prevent boot from finishing and leave every drawing control unwired.
+  const panelControl = (id, event, handler) => {
+    const control = panel.querySelector('#' + id);
+    if (control) control.addEventListener(event, handler);
+  };
+  panelControl('spClose', 'click', close);
 
-  document.getElementById('spBlank').addEventListener('click', () => {
+  panelControl('spBlank', 'click', () => {
     const u = panelUnitsValue();
     const d = applyUnitConversion(emptyDoc(), u);
     loadDoc(d, null, 'Untitled Drawing');
@@ -5736,7 +5907,7 @@ function showLaunchPanel(force) {
     toast('Blank drawing — units: ' + unitLabelOf(u));
   });
 
-  document.getElementById('spExample').addEventListener('click', () => {
+  panelControl('spExample', 'click', () => {
     hideLaunchPanel(true);
     loadSampleExample();
     toast('Example opened read-only — use "Start from this plan" to edit a copy');
@@ -5750,7 +5921,7 @@ function showLaunchPanel(force) {
     });
   }
 
-  document.getElementById('spA4').addEventListener('click', () => {
+  panelControl('spA4', 'click', () => {
     const u = panelUnitsValue();
     const d = emptyDoc();
     d.entities.push({ id: 'e1', type: 'rect', layer: '0', p1: [0, 0], p2: [210, 297] });
@@ -5873,6 +6044,7 @@ function cmdkFilter(q) {
 }
 
 function cmdkRender() {
+  if (!cmdkList) return;
   cmdkList.innerHTML = '';
   if (!cmdkMatches.length) {
     const empty = document.createElement('div');
@@ -5910,6 +6082,7 @@ function cmdkRun() {
 }
 
 function setCmdk(open) {
+  if (!cmdkEl || !cmdkOverlay || !cmdkInput || !cmdkList) return;
   if (open && state.readOnly) { exampleNotice(); return; }
   cmdkEl.hidden = !open;
   cmdkOverlay.hidden = !open;
@@ -5926,12 +6099,12 @@ function setCmdk(open) {
   }
 }
 
-cmdkInput.addEventListener('input', () => {
+if (cmdkInput) cmdkInput.addEventListener('input', () => {
   cmdkMatches = cmdkFilter(cmdkInput.value);
   cmdkSel = 0;
   cmdkRender();
 });
-cmdkInput.addEventListener('keydown', (ev) => {
+if (cmdkInput) cmdkInput.addEventListener('keydown', (ev) => {
   if (ev.key === 'ArrowDown') { ev.preventDefault(); if (cmdkMatches.length) { cmdkSel = (cmdkSel + 1) % cmdkMatches.length; cmdkRender(); } }
   else if (ev.key === 'ArrowUp') { ev.preventDefault(); if (cmdkMatches.length) { cmdkSel = (cmdkSel - 1 + cmdkMatches.length) % cmdkMatches.length; cmdkRender(); } }
   else if (ev.key === 'Enter') {
@@ -5944,7 +6117,7 @@ cmdkInput.addEventListener('keydown', (ev) => {
   }
   else if (ev.key === 'Escape') { ev.preventDefault(); setCmdk(false); }
 });
-cmdkOverlay.addEventListener('mousedown', () => setCmdk(false));
+if (cmdkOverlay) cmdkOverlay.addEventListener('mousedown', () => setCmdk(false));
 
 window.addEventListener('load', () => { boot(); });
 
