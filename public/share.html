@@ -27,6 +27,9 @@
     padding: 2px 8px; text-transform: uppercase;
   }
   header .when { margin-left: auto; color: #77869b; font-size: 12px; white-space: nowrap; }
+  #duplicate { flex: none; cursor: pointer; border: 1px solid #32617a; border-radius: 5px; background: #143348; color: #9cddff; padding: 6px 10px; font: 600 12px inherit; }
+  #duplicate:hover { background: #1b4560; }
+  #duplicate:disabled { opacity: .65; cursor: wait; }
   main { flex: 1; position: relative; min-height: 0; }
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   .msg {
@@ -58,6 +61,7 @@
   <span class="name" id="name">Loading…</span>
   <span class="when" id="when"></span>
   <span class="note" id="note" title=""></span>
+  <button id="duplicate" type="button" title="Create a new drawing in your account">Duplicate as editable</button>
 </header>
 <main id="stage">
   <canvas id="cv"></canvas>
@@ -366,6 +370,32 @@ if (!m) {
     })
     .catch(() => showError('⚠️', 'Network error while loading the drawing', ''));
 }
+document.getElementById('duplicate').addEventListener('click', async () => {
+  const button = document.getElementById('duplicate');
+  if (!window.confirm('Create an editable copy in your account? The original stays read-only. Your copy is saved separately.')) return;
+  button.disabled = true;
+  button.textContent = 'Creating copy…';
+  try {
+    const token = location.pathname.split('/').filter(Boolean).pop();
+    const response = await fetch('/api/share/' + encodeURIComponent(token) + '/duplicate', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    const result = await response.json().catch(() => ({}));
+    if (response.status === 401) {
+      button.disabled = false;
+      button.textContent = 'Duplicate as editable';
+      window.alert('Sign in or create an account, then return to this link to duplicate the drawing.');
+      return;
+    }
+    if (!response.ok || !result.edit_path) throw new Error(result.error || 'Could not create the editable copy');
+    window.alert(result.message);
+    location.assign(result.edit_path);
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = 'Duplicate as editable';
+    window.alert(error.message || 'Could not create the editable copy');
+  }
+});
 window.addEventListener('resize', resize);
 })();
 </script>

@@ -242,6 +242,37 @@ app.get('/api/drawings', async (req, res) => {
   }
 });
 
+// Duplicate a public shared drawing into the signed-in user's own editable drawing.
+// This reads the source by token and never modifies the source or grants its ownership.
+app.post('/api/share/:token/duplicate', requireAuth, async (req, res) => {
+  try {
+    const token = String(req.params.token || '');
+    if (!/^[a-f0-9]{16,64}$/.test(token)) return res.status(404).json({ error: 'not found' });
+    const { rows: found } = await pool.query(
+      'SELECT id, name, data, share_expires_at FROM drawings WHERE share_token = $1', [token]
+    );
+    if (!found.length) return res.status(404).json({ error: 'This share link is no longer available' });
+    const source = found[0];
+    if (source.share_expires_at && new Date(source.share_expires_at).getTime() <= Date.now()) {
+      return res.status(410).json({ error: 'This share link has expired', expired: true });
+    }
+    const id = newId();
+    const name = ('Copy of ' + String(source.name || 'Untitled Drawing')).slice(0, 200);
+    // The database stores JSONB, so this insert makes a distinct document with no shared state.
+    const { rows } = await pool.query(
+      'INSERT INTO drawings (id, name, data, owner) VALUES ($1, $2, $3, $4) RETURNING id, name, rev, updated_at',
+      [id, name, JSON.stringify(source.data), req.user]
+    );
+    res.status(201).json({
+      drawing: rows[0], data: source.data,
+      edit_path: '/d/' + encodeURIComponent(id),
+      message: 'Your editable copy is saved separately. The original shared drawing was not changed.',
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
 app.post('/api/drawings', requireAuth, async (req, res) => {
   try {
     const doc = req.body && req.body.data ? req.body.data : EMPTY_DOC;
