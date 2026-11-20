@@ -802,7 +802,7 @@ function drawOrthoGuide() {
   if (!state.doc) return;
   if (!state.ortho && !state.polar) return;
   const t = state.tool;
-  const drawing = ['line', 'polyline', 'rect', 'circle', 'arc', 'dim', 'measure'].includes(t) &&
+  const drawing = ['line', 'polyline', 'rect', 'building', 'circle', 'arc', 'dim', 'measure'].includes(t) &&
                   state.pending.length >= 1;
   const anchor = drawing ? state.pending[state.pending.length - 1]
               : (state.drag && state.drag.mode === 'move') ? state.drag.base
@@ -1773,6 +1773,7 @@ const PROMPTS = {
   line: 'Line: pick start point',
   polyline: 'Polyline: pick start point (Enter to finish)',
   rect: 'Rectangle: pick first corner',
+  building: 'Building: pick first footprint corner',
   circle: 'Circle: pick centre',
   arc: 'Arc: pick start, second point, then end',
   text: 'Text: pick insertion point',
@@ -1834,8 +1835,18 @@ function commitEntity(e) {
   renderAll();
 }
 
+function buildingOutlinePoints(a, b) {
+  // A two-corner footprint is stored as a closed, editable orthogonal polyline.
+  return [a, [b[0], a[1]], b, [a[0], b[1]], a];
+}
+
 function entityFromPending(tool, pts) {
   const L = state.doc.currentLayer;
+  if (tool === 'building' && pts.length === 2) {
+    const [a, b] = pts;
+    if (Math.abs(a[0] - b[0]) < 1e-9 || Math.abs(a[1] - b[1]) < 1e-9) return null;
+    return { type: 'polyline', layer: L, pts: buildingOutlinePoints(a, b) };
+  }
   if (tool === 'line' && pts.length === 2) return { type: 'line', layer: L, p1: pts[0], p2: pts[1] };
   if (tool === 'rect' && pts.length === 2) return { type: 'rect', layer: L, p1: pts[0], p2: pts[1] };
   if (tool === 'circle' && pts.length === 2) return { type: 'circle', layer: L, c: pts[0], r: Math.max(0.01, dist(pts[0], pts[1])) };
@@ -2318,7 +2329,7 @@ cv.addEventListener('mousemove', (ev) => {
     }
   } else if (t === 'measure' && state.pending.length === 1) {
     state.preview = { type: 'line', layer: state.doc.currentLayer, p1: state.pending[0], p2: p };
-  } else if (['line', 'rect', 'circle', 'dim', 'arc', 'polyline'].includes(t) && state.pending.length) {
+  } else if (['line', 'rect', 'building', 'circle', 'dim', 'arc', 'polyline'].includes(t) && state.pending.length) {
     const pts = state.pending.concat([p]);
     if (t === 'polyline') {
       state.preview = { type: 'polyline', layer: state.doc.currentLayer, pts };
@@ -2773,7 +2784,7 @@ function pickPoint(p) {
     if (ent) { commitEntity(ent); setPrompt(PROMPTS[t] + '  (again)'); }
     draw();
   } else {
-    const p2 = { line: 'pick end point', rect: 'pick opposite corner', circle: 'pick radius point',
+    const p2 = { line: 'pick end point', rect: 'pick opposite corner', building: 'pick opposite corner', circle: 'pick radius point',
                  arc: 'pick second point', dim: 'pick second point' }[t];
     setPrompt((t.charAt(0).toUpperCase() + t.slice(1)) + ': ' + p2 + ' — or type x,y / dist<angle');
   }
@@ -2781,7 +2792,7 @@ function pickPoint(p) {
 }
 
 const cmdInput = document.getElementById('cmdInput');
-const PT_TOOLS = ['line', 'polyline', 'rect', 'circle', 'arc', 'dim', 'text'];
+const PT_TOOLS = ['line', 'polyline', 'rect', 'building', 'circle', 'arc', 'dim', 'text'];
 
 /* ---------- command bar dispatcher (v1: LINE, RECTANGLE, CIRCLE, MOVE, COPY, OFFSET) ---------- */
 const CMD_NAMES = {
@@ -5993,6 +6004,7 @@ const CMDK_ITEMS = [
   { label: 'Polyline', hint: 'Chain of segments', key: 'P', run: () => setTool('polyline') },
   { label: 'Vertex edit', hint: 'Reshape a polyline', key: 'Q', run: () => setTool('vertex') },
   { label: 'Rectangle', hint: 'Two corners', key: 'R', run: () => setTool('rect') },
+  { label: 'Building outline', hint: 'Two opposite corners; creates a closed orthogonal polyline', run: () => setTool('building') },
   { label: 'Circle', hint: 'Centre + radius', key: 'C', run: () => setTool('circle') },
   { label: 'Arc', hint: 'Three points', key: 'A', run: () => setTool('arc') },
   { label: 'Text', hint: 'Place a note', key: 'T', run: () => setTool('text') },
