@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
 const { Pool } = require('pg');
+const { parseShareView, applyShareView } = require('./lib/share-view');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -98,6 +99,7 @@ async function init() {
   await db.query('ALTER TABLE drawings ADD COLUMN IF NOT EXISTS share_token TEXT');
   await db.query('ALTER TABLE drawings ADD COLUMN IF NOT EXISTS share_expires_at TIMESTAMPTZ');
   await db.query('ALTER TABLE drawings ADD COLUMN IF NOT EXISTS share_note TEXT');
+  await db.query('ALTER TABLE drawings ADD COLUMN IF NOT EXISTS share_view JSONB');
   await db.query('CREATE UNIQUE INDEX IF NOT EXISTS drawings_share_token_idx ON drawings (share_token) WHERE share_token IS NOT NULL');
   const { rows } = await db.query('SELECT count(*)::int AS n FROM drawings');
   if (rows[0].n === 0) await seed(db);
@@ -552,20 +554,32 @@ app.post('/api/drawings/:id/share', requireAuth, async (req, res) => {
       }
       note = noteText === '' ? null : noteText;
     }
+    // Optional saved view (viewport + hidden layers) pinned to the link.
+    // Absent key keeps the stored view; explicit null clears it.
+    let parsedView;
+    if (req.body && req.body.view !== undefined) {
+      const pv = parseShareView(req.body.view);
+      if (!pv.ok) return res.status(400).json({ error: pv.error });
+      parsedView = pv.view;
+    }
     const token = found[0].share_token || crypto.randomBytes(16).toString('hex');
     const { rows } = await pool.query(
       `UPDATE drawings SET share_token = $2,
          share_expires_at = CASE WHEN $3::double precision IS NULL THEN NULL
            ELSE now() + ($3::double precision * interval '1 hour') END,
-         share_note = CASE WHEN $4::boolean THEN $5::text ELSE share_note END
-       WHERE id = $1 RETURNING share_expires_at, share_note`,
-      [req.params.id, token, hours, note !== undefined, note === undefined ? null : note]
+         share_note = CASE WHEN $4::boolean THEN $5::text ELSE share_note END,
+         share_view = CASE WHEN $6::boolean THEN $7::jsonb ELSE share_view END
+       WHERE id = $1 RETURNING share_expires_at, share_note, share_view`,
+      [req.params.id, token, hours, note !== undefined, note === undefined ? null : note,
+       req.body && req.body.view !== undefined,
+       req.body && req.body.view !== undefined ? (parsedView === null ? null : JSON.stringify(parsedView)) : null]
     );
     res.json({
       share_token: token,
       share_path: '/s/' + token,
       share_expires_at: rows[0].share_expires_at,
       share_note: rows[0].share_note,
+      share_view: rows[0].share_view || null,
     });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
@@ -595,7 +609,7 @@ app.get('/api/share/:token', async (req, res) => {
     const token = String(req.params.token || '');
     if (!/^[a-f0-9]{16,64}$/.test(token)) return res.status(404).json({ error: 'not found' });
     const { rows } = await pool.query(
-      'SELECT id, name, data, updated_at, share_expires_at, share_note FROM drawings WHERE share_token = $1',
+      'SELECT id, name, data, updated_at, share_expires_at, share_note, share_view FROM drawings WHERE share_token = $1',
       [token]
     );
     if (!rows.length) return res.status(404).json({ error: 'This share link is no longer available' });
@@ -603,11 +617,18 @@ app.get('/api/share/:token', async (req, res) => {
     if (d.share_expires_at && new Date(d.share_expires_at).getTime() <= Date.now()) {
       return res.status(410).json({ error: 'This share link has expired', expired: true });
     }
+    let view = null;
+    if (d.share_view) {
+      const pv = parseShareView(d.share_view);
+      if (pv.ok) view = pv.view;
+    }
+    const applied = view ? applyShareView(d.data, view) : { data: d.data };
     res.json({
-      drawing: { id: d.id, name: d.name, data: d.data, updated_at: d.updated_at },
+      drawing: { id: d.id, name: d.name, data: applied.data, updated_at: d.updated_at },
       readonly: true,
       share_expires_at: d.share_expires_at,
       share_note: d.share_note || null,
+      share_view: view,
     });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });

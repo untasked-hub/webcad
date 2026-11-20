@@ -4483,6 +4483,14 @@ async function createShareLink(id, ttl = '7d', note) {
   const payload = { ttl };
   // undefined keeps the existing note; an explicit empty string clears it.
   if (typeof note === 'string') payload.note = note.slice(0, 140);
+  // When sharing the drawing that is currently open, pin the saved view (viewport
+  // plus hidden layers) so reviewers land on the same frame the owner sees.
+  if (id === state.drawingId && state.doc && state.view) {
+    const hidden = Array.isArray(state.doc.layers)
+      ? state.doc.layers.filter(l => l && l.visible === false).map(l => String(l.name)).slice(0, 40)
+      : [];
+    payload.view = { x: state.view.x, y: state.view.y, zoom: state.view.zoom, hiddenLayers: hidden };
+  }
   const res = await fetch('/api/drawings/' + encodeURIComponent(id) + '/share', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
   });

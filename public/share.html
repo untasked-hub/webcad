@@ -27,9 +27,17 @@
     padding: 2px 8px; text-transform: uppercase;
   }
   header .when { margin-left: auto; color: #77869b; font-size: 12px; white-space: nowrap; }
-  #duplicate { flex: none; cursor: pointer; border: 1px solid #32617a; border-radius: 5px; background: #143348; color: #9cddff; padding: 6px 10px; font: 600 12px inherit; }
-  #duplicate:hover { background: #1b4560; }
+  #duplicate, #measure { flex: none; cursor: pointer; border: 1px solid #32617a; border-radius: 5px; background: #143348; color: #9cddff; padding: 6px 10px; font: 600 12px inherit; }
+  #duplicate:hover, #measure:hover { background: #1b4560; }
   #duplicate:disabled { opacity: .65; cursor: wait; }
+  #measure.on { background: #1d5a3a; border-color: #2f8f5b; color: #8ff0b3; }
+  #measureReadout { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; color: #8ff0b3; min-width: 0; white-space: nowrap; }
+  #measureSummary { display: none; position: absolute; z-index: 2; top: 12px; right: 12px; width: min(280px, calc(100% - 24px)); max-height: min(42vh, 260px); overflow: auto; padding: 11px 12px; border: 1px solid #285543; border-radius: 8px; background: rgba(12, 24, 22, .94); box-shadow: 0 8px 24px rgba(0,0,0,.28); color: #c8f4df; pointer-events: none; }
+  #measureSummary.on { display: block; }
+  #measureSummary h2 { margin: 0 0 7px; color: #8ff0b3; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+  #measureSummary p { color: #89a99b; font-size: 11px; margin-bottom: 7px; }
+  #measureSummary ol { padding-left: 21px; font: 11px/1.65 "JetBrains Mono", ui-monospace, monospace; }
+  #measureSummary li { padding-left: 2px; }
   main { flex: 1; position: relative; min-height: 0; }
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   .msg {
@@ -61,14 +69,17 @@
   <span class="name" id="name">Loading…</span>
   <span class="when" id="when"></span>
   <span class="note" id="note" title=""></span>
+  <button id="measure" type="button" title="Measure distances and areas on this read-only view (M)">📏 Measure</button>
+  <span id="measureReadout" aria-live="polite"></span>
   <button id="duplicate" type="button" title="Create a new drawing in your account">Duplicate as editable</button>
 </header>
 <main id="stage">
   <canvas id="cv"></canvas>
+  <aside id="measureSummary" aria-live="polite" aria-label="Temporary measurement summary"></aside>
   <div class="msg" id="msg"><div class="big">⌛</div><h1>Loading shared drawing…</h1></div>
 </main>
 <footer>
-  <span>This is a read-only view. Open <a href="/">WebCAD</a> to draw your own.</span>
+  <span>This is a read-only view. Open <a href="/">WebCAD</a> to draw your own. Press M to measure; Esc clears.</span>
   <span class="count" id="count"></span>
 </footer>
 <script>
@@ -91,12 +102,62 @@ const stage = document.getElementById('stage');
 let view = { x: 0, y: 0, zoom: 1 };
 let doc = null;
 let underlayImage = null;
+const measure = { on: false, pts: [], hover: null };
 
 function cvW() { return stage.clientWidth; }
 function cvH() { return stage.clientHeight; }
 function w2s(p) {
   return [(p[0] - view.x) * view.zoom + cvW() / 2,
           cvH() / 2 - (p[1] - view.y) * view.zoom];
+}
+function s2w(p) {
+  return [(p[0] - cvW() / 2) / view.zoom + view.x,
+          (cvH() / 2 - p[1]) / view.zoom + view.y];
+}
+function unitLabel() { return doc && doc.units && doc.units !== 'none' ? ' ' + doc.units : ''; }
+function unit2Label() { return doc && doc.units && doc.units !== 'none' ? ' ' + doc.units + '²' : ' sq units'; }
+function polyArea(pts) {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i], q = pts[(i + 1) % pts.length];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return Math.abs(a) / 2;
+}
+function polyLength(pts, closed) {
+  let L = 0;
+  for (let i = 1; i < pts.length; i++) L += dist(pts[i - 1], pts[i]);
+  if (closed && pts.length > 2) L += dist(pts[pts.length - 1], pts[0]);
+  return L;
+}
+function updateMeasureSummary() {
+  const panel = document.getElementById('measureSummary');
+  const pts = measure.pts;
+  if (!panel) return;
+  if (!measure.on || pts.length < 2) {
+    panel.classList.remove('on');
+    panel.replaceChildren();
+    return;
+  }
+  const closed = pts.length >= 3;
+  const list = document.createElement('ol');
+  for (let i = 1; i < pts.length; i++) {
+    const item = document.createElement('li');
+    item.textContent = 'Segment ' + i + ' · ' + fmt(dist(pts[i - 1], pts[i])) + unitLabel();
+    list.appendChild(item);
+  }
+  if (closed) {
+    const item = document.createElement('li');
+    item.textContent = 'Closing edge · ' + fmt(dist(pts[pts.length - 1], pts[0])) + unitLabel();
+    list.appendChild(item);
+  }
+  const heading = document.createElement('h2');
+  heading.textContent = 'Temporary measurement';
+  const totals = document.createElement('p');
+  totals.textContent = 'Path ' + fmt(polyLength(pts, closed)) + unitLabel() +
+    (closed ? ' · Area ' + fmt(polyArea(pts)) + unit2Label() : '');
+  panel.replaceChildren(heading, totals, list);
+  panel.classList.add('on');
 }
 
 function arcPts(e, n) {
@@ -295,6 +356,66 @@ function fitView() {
   view.y = (ext.y0 + ext.y1) / 2;
 }
 
+function drawMeasureOverlay() {
+  const pts = measure.pts;
+  if (!measure.on && pts.length === 0) return;
+  const hover = measure.hover;
+  const all = hover ? pts.concat([hover]) : pts.slice();
+  ctx.save();
+  ctx.lineWidth = 1.4;
+  ctx.strokeStyle = '#7fffd0';
+  ctx.fillStyle = '#7fffd0';
+  ctx.setLineDash([6, 4]);
+  if (all.length >= 2) {
+    ctx.beginPath();
+    const s0 = w2s(all[0]);
+    ctx.moveTo(s0[0], s0[1]);
+    for (let i = 1; i < all.length; i++) { const s = w2s(all[i]); ctx.lineTo(s[0], s[1]); }
+    if (pts.length >= 3 && !hover) ctx.closePath();
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  if (pts.length >= 3) {
+    ctx.beginPath();
+    const s0 = w2s(pts[0]);
+    ctx.moveTo(s0[0], s0[1]);
+    for (let i = 1; i < pts.length; i++) { const s = w2s(pts[i]); ctx.lineTo(s[0], s[1]); }
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(127,255,208,.12)';
+    ctx.fill();
+  }
+  for (const p of pts) {
+    const s = w2s(p);
+    ctx.beginPath(); ctx.arc(s[0], s[1], 3.5, 0, TAU); ctx.fillStyle = '#7fffd0'; ctx.fill();
+  }
+  // labels
+  ctx.font = '600 11px "JetBrains Mono", monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+  for (let i = 1; i < all.length; i++) {
+    const a = w2s(all[i - 1]), b = w2s(all[i]);
+    const seg = dist(all[i - 1], all[i]);
+    const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+    const txt = fmt(seg) + unitLabel();
+    const tw = ctx.measureText(txt).width;
+    ctx.fillStyle = 'rgba(11,16,23,.88)';
+    ctx.fillRect(mx - tw / 2 - 3, my - 15, tw + 6, 14);
+    ctx.fillStyle = '#7fffd0';
+    ctx.fillText(txt, mx, my - 2);
+  }
+  updateMeasureSummary();
+  const readout = document.getElementById('measureReadout');
+  if (pts.length >= 2) {
+    let txt = 'Σ ' + fmt(polyLength(pts, pts.length >= 3 && !hover)) + unitLabel();
+    if (pts.length >= 3) txt += '  ·  A ' + fmt(polyArea(pts)) + unit2Label();
+    readout.textContent = txt;
+  } else if (measure.on) {
+    readout.textContent = 'Click two or more points…';
+  } else {
+    readout.textContent = '';
+  }
+  ctx.restore();
+}
+
 function draw() {
   ctx.clearRect(0, 0, cvW(), cvH());
   ctx.fillStyle = '#0b1017';
@@ -302,6 +423,7 @@ function draw() {
   if (!doc) return;
   drawUnderlay();
   for (const e of doc.entities) drawEntity(e);
+  drawMeasureOverlay();
 }
 
 function showError(icon, title, extra) {
@@ -364,9 +486,57 @@ if (!m) {
         (doc.units && doc.units !== 'none' ? ' · ' + doc.units : '');
       document.getElementById('msg').style.display = 'none';
       resize();
-      fitView();
+      const savedView = json.share_view;
+      if (savedView && Number.isFinite(savedView.x) && Number.isFinite(savedView.y) &&
+          Number.isFinite(savedView.zoom) && savedView.zoom > 0) {
+        view = { x: savedView.x, y: savedView.y, zoom: savedView.zoom };
+      } else {
+        fitView();
+      }
       draw();
       window.addEventListener('resize', () => { resize(); });
+      const measureBtn = document.getElementById('measure');
+      const setMeasure = (on) => {
+        measure.on = on;
+        measure.pts = [];
+        measure.hover = null;
+        measureBtn.classList.toggle('on', on);
+        if (!on) document.getElementById('measureReadout').textContent = '';
+        updateMeasureSummary();
+        draw();
+      };
+      measureBtn.addEventListener('click', () => setMeasure(!measure.on));
+      window.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Escape') { setMeasure(false); }
+        else if (ev.key === 'm' || ev.key === 'M') {
+          const tag = (ev.target && ev.target.tagName) || '';
+          if (tag !== 'INPUT' && tag !== 'TEXTAREA') setMeasure(!measure.on);
+        }
+      });
+      cv.addEventListener('mousemove', (ev) => {
+        if (!measure.on) return;
+        const r = cv.getBoundingClientRect();
+        measure.hover = s2w([ev.clientX - r.left, ev.clientY - r.top]);
+        draw();
+      });
+      cv.addEventListener('mouseleave', () => {
+        if (!measure.on) return;
+        measure.hover = null;
+        draw();
+      });
+      cv.addEventListener('click', (ev) => {
+        if (!measure.on) return;
+        const r = cv.getBoundingClientRect();
+        measure.pts.push(s2w([ev.clientX - r.left, ev.clientY - r.top]));
+        measure.hover = null;
+        draw();
+      });
+      cv.addEventListener('dblclick', (ev) => {
+        if (!measure.on) return;
+        ev.preventDefault();
+        measure.hover = null;
+        draw();
+      });
     })
     .catch(() => showError('⚠️', 'Network error while loading the drawing', ''));
 }
