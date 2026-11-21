@@ -657,20 +657,7 @@ app.get('/api/share/:token', async (req, res) => {
       const pv = parseShareView(d.share_view);
       if (pv.ok) view = pv.view;
     }
-    let digest = null;
     if (req.user && d.owner && req.user === d.owner) {
-      try {
-        const { rows: pinRows } = await pool.query(
-          `SELECT ROUND(x::numeric, 2) AS x, ROUND(y::numeric, 2) AS y, count(*)::int AS n
-             FROM share_comments
-            WHERE share_token = $1
-              AND created_at > COALESCE((SELECT seen_at FROM share_comment_reads WHERE drawing_id = $2), 'epoch'::timestamptz)
-            GROUP BY 1, 2 ORDER BY n DESC, 1, 2`,
-          [token, d.id]
-        );
-        const unread = pinRows.reduce((a, r) => a + r.n, 0);
-        if (unread > 0) digest = { unread, pins: pinRows.map(r => ({ x: Number(r.x), y: Number(r.y), count: r.n })) };
-      } catch (e) { /* non-fatal */ }
       try {
         await pool.query(
           `INSERT INTO share_comment_reads (drawing_id, seen_at) VALUES ($1, now())
@@ -686,7 +673,6 @@ app.get('/api/share/:token', async (req, res) => {
       share_expires_at: d.share_expires_at,
       share_note: d.share_note || null,
       share_view: view,
-      digest,
     });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });

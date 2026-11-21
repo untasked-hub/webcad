@@ -66,6 +66,10 @@
     background: #2a2114; font-size: 12px; font-weight: 600;
   }
   .digest.on { display: inline-block; }
+  #unreadChip { display: none; position: absolute; z-index: 4; top: 12px; left: 50%; transform: translateX(-50%); align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; border: 1px solid #6a4a1a; background: rgba(42, 33, 20, .95); color: #ffd27f; font: 600 12px Inter, system-ui, sans-serif; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+  #unreadChip.on { display: inline-flex; }
+  #unreadChip:hover { background: #3a2d1c; }
+  #unreadChip .x { border: none; background: transparent; color: #ffd27f; cursor: pointer; font-size: 13px; padding: 0 2px; line-height: 1; }
   #pinToggle { flex: none; cursor: pointer; border: 1px solid #6a4a8a; border-radius: 5px; background: #241a33; color: #d3a6ff; padding: 6px 10px; font: 600 12px inherit; }
   #pinToggle:hover { background: #2e2140; }
   #pinToggle.on { background: #3a2a52; border-color: #9a6ae0; color: #e6ccff; }
@@ -109,6 +113,7 @@
 </header>
 <div id="briefBanner" role="note" aria-label="Reviewer brief from the drawing owner"><span class="brief-label">Review brief</span><span class="brief-body" id="briefText"></span><button type="button" id="briefDismiss" aria-label="Dismiss review brief">Dismiss</button></div>
 <main id="stage">
+  <button id="unreadChip" type="button" aria-label="Jump to unread comments"><span id="unreadChipText"></span><span class="x" id="unreadChipDismiss" role="button" aria-label="Dismiss">×</span></button>
   <canvas id="cv"></canvas>
   <aside id="measureSummary" aria-live="polite" aria-label="Temporary measurement summary"></aside>
   <aside id="commentPanel" aria-label="Pinned comments">
@@ -147,6 +152,8 @@ const fmt = (v) => (Math.round(v * 100) / 100).toFixed(2).replace(/\.?0+$/, '');
 let comments = [];
 let commentMode = false;
 let pendingPin = null;
+let unreadDigest = null;
+let unreadChipDismissed = false;
 
 const commentToken = () => {
   const m = location.pathname.match(/^\/s\/([a-f0-9]{16,64})\/?$/);
@@ -193,8 +200,19 @@ function drawCommentPins() {
   ctx.font = 'bold 11px Inter, system-ui, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+  const unreadKeys = new Set((unreadDigest && Array.isArray(unreadDigest.pins) ? unreadDigest.pins : [])
+    .map(p => Number(p.x).toFixed(2) + ',' + Number(p.y).toFixed(2)));
   for (const c of comments) {
     const [sx, sy] = w2s([c.x, c.y]);
+    if (unreadKeys.has(Number(c.x).toFixed(2) + ',' + Number(c.y).toFixed(2)) && !c.resolved) {
+      ctx.beginPath();
+      ctx.arc(sx, sy, 14, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255, 210, 127, 0.9)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([3, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
     ctx.beginPath();
     ctx.arc(sx, sy, 10, 0, Math.PI * 2);
     ctx.fillStyle = c.resolved ? 'rgba(90, 150, 110, 0.9)' : 'rgba(154, 90, 255, 0.92)';
@@ -558,6 +576,34 @@ function showError(icon, title, extra) {
   msg.style.display = 'flex';
 }
 
+function updateUnreadChip() {
+  const chip = document.getElementById('unreadChip');
+  const txt = document.getElementById('unreadChipText');
+  if (!chip || !txt) return;
+  if (unreadDigest && !unreadChipDismissed) {
+    const n = unreadDigest.unread;
+    txt.textContent = '💬 ' + n + ' new comment' + (n === 1 ? '' : 's') + ' — jump to latest';
+    chip.classList.add('on');
+  } else {
+    chip.classList.remove('on');
+  }
+}
+document.getElementById('unreadChip').addEventListener('click', (ev) => {
+  if (ev.target && ev.target.id === 'unreadChipDismiss') return;
+  if (!unreadDigest || !Array.isArray(unreadDigest.pins) || !unreadDigest.pins.length) return;
+  const target = unreadDigest.pins[0];
+  view.x = target.x; view.y = target.y;
+  if (view.zoom < 2) view.zoom = 2;
+  const panel = document.getElementById('commentPanel');
+  if (panel) panel.classList.add('on');
+  draw();
+});
+document.getElementById('unreadChipDismiss').addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  unreadChipDismissed = true;
+  updateUnreadChip();
+});
+
 // token comes from /s/<token>; tolerate a trailing slash
 const m = location.pathname.match(/^\/s\/([a-f0-9]{16,64})\/?$/);
 if (!m) {
@@ -608,6 +654,8 @@ if (!m) {
       }
       const digestEl = document.getElementById('digest');
       const dg = json.digest;
+      unreadDigest = (dg && Number.isFinite(dg.unread) && dg.unread > 0) ? dg : null;
+      updateUnreadChip();
       if (dg && Number.isFinite(dg.unread) && dg.unread > 0) {
         const n = dg.unread;
         digestEl.textContent = '💬 ' + n + ' unread comment' + (n === 1 ? '' : 's');
