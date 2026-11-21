@@ -257,6 +257,7 @@ body{
 }
 .share-note:focus{outline:none;border-color:var(--accent2)}
 .share-status{color:var(--accent2)}
+.unread-badge{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:999px;background:#3a2a12;color:#ffcf6b;border:1px solid #6b5320;font-size:10px;font-weight:700;letter-spacing:.02em;vertical-align:1px}
 .status-pill.saving{background:#1a2130;color:var(--accent2);border-color:#243247}
 
 /* ---------- on-demand command guide ---------- */

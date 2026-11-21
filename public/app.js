@@ -4366,7 +4366,8 @@ async function showOpen() {
         esc(fmtDate(d.updated_at)) + (d.owner ? ' / ' + esc(d.owner) : '') +
         (d.has_share_link ? ' / <span class="share-status">' + (d.is_shared ? 'Shared link active' : 'Share link expired') + '</span>' : '') +
         (d.is_shared && d.share_expires_at ? ' / expires ' + esc(fmtDate(d.share_expires_at)) : (d.is_shared && d.has_share_link ? ' / never expires' : '')) +
-        (d.is_shared && d.share_note ? ' / note: ' + esc(d.share_note) : '') + '</span></div>';
+        (d.is_shared && d.share_note ? ' / note: ' + esc(d.share_note) : '') +
+        (d.unread_comments > 0 ? ' <span class="unread-badge" title="Unread comments from reviewers">' + d.unread_comments + ' new comment' + (d.unread_comments === 1 ? '' : 's') + '</span>' : '') + '</span></div>';
       let ttl = null;
       let noteInput = null;
       if (currentUser && d.owner === currentUser.username) {
@@ -4374,10 +4375,10 @@ async function showOpen() {
         noteInput.type = 'text';
         noteInput.className = 'share-note';
         noteInput.maxLength = 140;
-        noteInput.placeholder = 'Revision note (optional)';
+        noteInput.placeholder = 'Review brief for reviewers (optional)';
         noteInput.value = d.share_note || '';
-        noteInput.title = 'Pinned to the read-only link so reviewers know what changed';
-        noteInput.setAttribute('aria-label', 'Revision note for the share link of ' + d.name);
+        noteInput.title = 'Shown to reviewers as a dismissible brief banner on the read-only link';
+        noteInput.setAttribute('aria-label', 'Review brief for reviewers of the share link of ' + d.name);
         ttl = document.createElement('select');
         ttl.className = 'share-ttl';
         ttl.setAttribute('aria-label', 'Share link expiry for ' + d.name);
@@ -4515,6 +4516,7 @@ async function createShareLink(id, ttl = '7d', note) {
   const json = await res.json();
   return location.origin + (json.share_path || '/s/' + json.share_token);
 }
+
 
 async function copyShareLink(id, ttl = '7d', note) {
   const url = await createShareLink(id, ttl, note);

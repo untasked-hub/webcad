@@ -101,6 +101,21 @@ async function init() {
   await db.query('ALTER TABLE drawings ADD COLUMN IF NOT EXISTS share_note TEXT');
   await db.query('ALTER TABLE drawings ADD COLUMN IF NOT EXISTS share_view JSONB');
   await db.query('CREATE UNIQUE INDEX IF NOT EXISTS drawings_share_token_idx ON drawings (share_token) WHERE share_token IS NOT NULL');
+  await db.query(`CREATE TABLE IF NOT EXISTS share_comments (
+    id SERIAL PRIMARY KEY,
+    share_token TEXT NOT NULL,
+    x DOUBLE PRECISION NOT NULL,
+    y DOUBLE PRECISION NOT NULL,
+    author TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL,
+    resolved BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await db.query('CREATE INDEX IF NOT EXISTS share_comments_token_idx ON share_comments (share_token)');
+  await db.query(`CREATE TABLE IF NOT EXISTS share_comment_reads (
+    drawing_id TEXT PRIMARY KEY,
+    seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
   const { rows } = await db.query('SELECT count(*)::int AS n FROM drawings');
   if (rows[0].n === 0) await seed(db);
   if (admin !== pool) await admin.end().catch(() => {});
@@ -226,6 +241,8 @@ app.get('/api/drawings', async (req, res) => {
                     (share_expires_at IS NULL OR share_expires_at > now())) AS is_shared,
                   (owner IS NOT NULL AND owner = $1 AND share_token IS NOT NULL) AS has_share_link,
                   share_expires_at, share_note,
+                  (SELECT count(*) FROM share_comments sc WHERE sc.share_token = drawings.share_token
+                     AND sc.created_at > COALESCE((SELECT seen_at FROM share_comment_reads WHERE drawing_id = drawings.id), 'epoch'::timestamptz))::int AS unread_comments,
                   jsonb_array_length(COALESCE(data->'entities', '[]'::jsonb)) AS entity_count
              FROM drawings
             WHERE owner IS NULL OR owner = $1
@@ -517,6 +534,24 @@ app.post('/api/drawings/:id/duplicate', requireAuth, async (req, res) => {
 
 /* ---------- read-only share links ---------- */
 
+app.post('/api/drawings/:id/comments-seen', requireAuth, async (req, res) => {
+  try {
+    const { rows: found } = await pool.query('SELECT id, owner FROM drawings WHERE id = $1', [req.params.id]);
+    if (!found.length) return res.status(404).json({ error: 'not found' });
+    if (found[0].owner !== req.user) {
+      return res.status(403).json({ error: 'Only the owner can mark comments seen' });
+    }
+    await pool.query(
+      `INSERT INTO share_comment_reads (drawing_id, seen_at) VALUES ($1, now())
+       ON CONFLICT (drawing_id) DO UPDATE SET seen_at = now()`,
+      [req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
 app.post('/api/drawings/:id/share', requireAuth, async (req, res) => {
   try {
     const { rows: found } = await pool.query('SELECT id, owner, share_token FROM drawings WHERE id = $1', [
@@ -609,7 +644,7 @@ app.get('/api/share/:token', async (req, res) => {
     const token = String(req.params.token || '');
     if (!/^[a-f0-9]{16,64}$/.test(token)) return res.status(404).json({ error: 'not found' });
     const { rows } = await pool.query(
-      'SELECT id, name, data, updated_at, share_expires_at, share_note, share_view FROM drawings WHERE share_token = $1',
+      'SELECT id, name, data, updated_at, share_expires_at, share_note, share_view, owner FROM drawings WHERE share_token = $1',
       [token]
     );
     if (!rows.length) return res.status(404).json({ error: 'This share link is no longer available' });
@@ -622,6 +657,28 @@ app.get('/api/share/:token', async (req, res) => {
       const pv = parseShareView(d.share_view);
       if (pv.ok) view = pv.view;
     }
+    let digest = null;
+    if (req.user && d.owner && req.user === d.owner) {
+      try {
+        const { rows: pinRows } = await pool.query(
+          `SELECT ROUND(x::numeric, 2) AS x, ROUND(y::numeric, 2) AS y, count(*)::int AS n
+             FROM share_comments
+            WHERE share_token = $1
+              AND created_at > COALESCE((SELECT seen_at FROM share_comment_reads WHERE drawing_id = $2), 'epoch'::timestamptz)
+            GROUP BY 1, 2 ORDER BY n DESC, 1, 2`,
+          [token, d.id]
+        );
+        const unread = pinRows.reduce((a, r) => a + r.n, 0);
+        if (unread > 0) digest = { unread, pins: pinRows.map(r => ({ x: Number(r.x), y: Number(r.y), count: r.n })) };
+      } catch (e) { /* non-fatal */ }
+      try {
+        await pool.query(
+          `INSERT INTO share_comment_reads (drawing_id, seen_at) VALUES ($1, now())
+           ON CONFLICT (drawing_id) DO UPDATE SET seen_at = now()`,
+          [d.id]
+        );
+      } catch (e) { /* non-fatal */ }
+    }
     const applied = view ? applyShareView(d.data, view) : { data: d.data };
     res.json({
       drawing: { id: d.id, name: d.name, data: applied.data, updated_at: d.updated_at },
@@ -629,7 +686,77 @@ app.get('/api/share/:token', async (req, res) => {
       share_expires_at: d.share_expires_at,
       share_note: d.share_note || null,
       share_view: view,
+      digest,
     });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+/* ---------- pinned comments on shared drawings ---------- */
+
+async function findValidShare(token) {
+  if (!/^[a-f0-9]{16,64}$/.test(String(token || ''))) return null;
+  const { rows } = await pool.query(
+    'SELECT id, share_expires_at FROM drawings WHERE share_token = $1',
+    [token]
+  );
+  if (!rows.length) return null;
+  const d = rows[0];
+  if (d.share_expires_at && new Date(d.share_expires_at).getTime() <= Date.now()) return null;
+  return d;
+}
+
+app.get('/api/share/:token/comments', async (req, res) => {
+  try {
+    const share = await findValidShare(req.params.token);
+    if (!share) return res.status(404).json({ error: 'This share link is no longer available' });
+    const { rows } = await pool.query(
+      'SELECT id, x, y, author, body, resolved, created_at FROM share_comments WHERE share_token = $1 ORDER BY id ASC',
+      [req.params.token]
+    );
+    res.json({ comments: rows });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+app.post('/api/share/:token/comments', async (req, res) => {
+  try {
+    const share = await findValidShare(req.params.token);
+    if (!share) return res.status(404).json({ error: 'This share link is no longer available' });
+    const body = req.body || {};
+    const x = Number(body.x), y = Number(body.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return res.status(400).json({ error: 'x and y must be finite numbers' });
+    }
+    const text = String(body.body == null ? '' : body.body).trim();
+    if (!text) return res.status(400).json({ error: 'Comment text is required' });
+    if (text.length > 500) return res.status(400).json({ error: 'Comment must be 500 characters or fewer' });
+    const author = String(body.author == null ? '' : body.author).trim().slice(0, 60);
+    const { rows } = await pool.query(
+      'INSERT INTO share_comments (share_token, x, y, author, body) VALUES ($1, $2, $3, $4, $5) RETURNING id, x, y, author, body, resolved, created_at',
+      [req.params.token, x, y, author, text]
+    );
+    res.status(201).json({ comment: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+app.patch('/api/share/:token/comments/:id', async (req, res) => {
+  try {
+    const share = await findValidShare(req.params.token);
+    if (!share) return res.status(404).json({ error: 'This share link is no longer available' });
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid comment id' });
+    const resolved = !!(req.body && req.body.resolved);
+    const { rows } = await pool.query(
+      'UPDATE share_comments SET resolved = $3 WHERE id = $1 AND share_token = $2 RETURNING id, x, y, author, body, resolved, created_at',
+      [id, req.params.token, resolved]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Comment not found' });
+    res.json({ comment: rows[0] });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
